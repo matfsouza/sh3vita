@@ -47,8 +47,8 @@ playing on a Vita needs (controls, a puzzle cursor, the screen layout, safe save
   back other 3D sprite effects that were missing.
 - **Saves and settings** are written to a temporary file first, so a crash during a save keeps your previous save.
 - **Movies:** less work per frame when playing the FMVs.
-- The game is now called **Silent Hill 3 Enhanced Edition** on the Vita (same title ID: install over 1.0, your
-  saves stay).
+- The game is now called **Silent Hill 3 Enhanced Edition** on the Vita. It installs as a new bubble: your saves
+  in `ux0:data/sh3/` stay, and you can delete the old Silent Hill 3 bubble.
 
 ## What you need
 

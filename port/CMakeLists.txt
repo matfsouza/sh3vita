@@ -8,7 +8,7 @@ project(sh3vita C)
 include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "Silent Hill 3 Enhanced Edition")
-set(VITA_TITLEID  "SILH00003")
+set(VITA_TITLEID  "SH3EE0001")
 set(VITA_VERSION "01.10" CACHE STRING "VPK application version (keep the title ID unchanged)")
 
 # C code generated from the player's own exe (port/gen/, never versioned): run recomp/x86rec.py first.
