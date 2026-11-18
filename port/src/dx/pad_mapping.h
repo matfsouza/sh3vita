@@ -28,3 +28,16 @@ static inline unsigned sh3_pad_buttons(unsigned raw) {
 #undef SH3_PB
     return out;
 }
+
+// The d-pad also works as the left stick, as on the PS2 (walking, the puzzle cursor). It only takes over while the
+// stick rests, so a tilted stick keeps full analog control; the POV hat is still sent for the menus.
+static inline void sh3_dpad_stick(unsigned raw, Sint16 *x, Sint16 *y) {
+    const int rest = 8000;
+    if (*x > rest || *x < -rest || *y > rest || *y < -rest) return;
+    int dx = (int)((raw >> SDL_CONTROLLER_BUTTON_DPAD_RIGHT) & 1u) - (int)((raw >> SDL_CONTROLLER_BUTTON_DPAD_LEFT) & 1u);
+    int dy = (int)((raw >> SDL_CONTROLLER_BUTTON_DPAD_DOWN) & 1u) - (int)((raw >> SDL_CONTROLLER_BUTTON_DPAD_UP) & 1u);
+    if (!dx && !dy) return;
+    int v = dx && dy ? 23170 : 32767;   // diagonal: same length as a straight push
+    *x = (Sint16)(dx * v);
+    *y = (Sint16)(dy * v);
+}

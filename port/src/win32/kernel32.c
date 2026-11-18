@@ -1,5 +1,6 @@
 // Emulated KERNEL32 (the 97 functions imported by sh3.exe).
 #include "win32.h"
+#include "safe_write.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -448,6 +449,7 @@ K(WaitForMultipleObjects) {
 #define PF_MAX 1310720u
 typedef struct {
     FILE *f; char path[600]; int ro, pfreuse;
+    int commit;   // written to path + ".tmp": CloseHandle swaps it in (safe_write.h)
     uint8_t *pf; uint32_t pfcap, pfwant; long pfpos; SDL_Thread *th;
     SDL_atomic_t pfgot, pfdone, pfabort;
     struct { long key, pos; uint32_t n; } nx[8]; unsigned nxi;
@@ -523,7 +525,16 @@ K(CreateFileA) {
     File *fl = calloc(1, sizeof *fl);
     if (!fl) { w32_set_last_error(c, 8); STDRET(7, 0xffffffffu); }
     errno = 0;
-    FILE *f = fopen(hp, mode);
+    FILE *f;
+    // CREATE_ALWAYS truncates at once: saves, data.sys and disp.ini go to NAME.tmp, swapped in on CloseHandle, so a
+    // crash during a save leaves the previous one (safe_write.h).
+    char tmp[620];
+    fl->commit = (access & 0x40000000u) && disp == 2 && !sw_tmp_path(hp, tmp, sizeof tmp);
+    if (fl->commit) f = fopen(tmp, "w+b");
+    else {
+        f = fopen(hp, mode);
+        if (!f && errno == ENOENT && sw_recover(hp)) { rt_log("[file] %s recovered from .bak\n", hp); f = fopen(hp, mode); }
+    }
     if (!f && errno == ENOENT && (access & 0x40000000u) && disp == 4) f = fopen(hp, "w+b"); // OPEN_ALWAYS
     if (!f) {
         uint32_t error = file_error(errno, 2);
@@ -996,6 +1007,10 @@ K(CloseHandle) {
         pf_stop(f); pf_head_forget(f); pf_release(f->pfcap); free(f->pf);
         errno = 0;
         if (fclose(f->f)) error = file_error(errno, 29);
+        if (f->commit) {
+            if (!error && sw_commit(f->path)) error = file_error(errno, 29);
+            rt_log("[file] %s %s\n", f->path, error ? "NOT saved (previous file kept)" : "saved");
+        }
         free(f);
     }
     h_close(h);

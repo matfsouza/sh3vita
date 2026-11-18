@@ -295,7 +295,14 @@ M(tex, LockRect) {
     uint32_t l = ARG(2);
     if (l >= self->levels) STDRET(5, D3DERR_INVALIDCALL);
     uint32_t w = self->w >> l;
-    if (!self->snap) prep_wait_use(self->use);   // snapshot textures: the render thread never reads this memory
+    // Snapshot textures, and on the Vita the movie texture once its frames come from the movie thread (stg_alloc,
+    // movie_565_take in tex_upload): the render thread never reads this memory, so the game's per-frame copy into it
+    // (the movie renderer's Receive) does not wait for the GPU. The wait cost the movie output thread up to a frame.
+    int no_wait = self->snap;
+#ifdef __vita__
+    no_wait |= self->movie && self->fmt == FMT_A8R8G8B8 && self->stg_alloc;
+#endif
+    if (!no_wait) prep_wait_use(self->use);
     STDRET(5, lock_rect(surf_mem(self->lv[l]), self->fmt, w ? w : 1, ARG(3), ARG(4)));
 }
 M(tex, UnlockRect) {

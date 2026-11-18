@@ -40,6 +40,14 @@ int main(void) {
     expect("pause is one button", sh3_pad_buttons(B(START)) & ~DI(SH3_DI_PAUSE), 0);
     /* the d-pad stays a d-pad (POV, menus): no DI button */
     expect("d-pad", sh3_pad_buttons(B(DPAD_UP) | B(DPAD_DOWN) | B(DPAD_LEFT) | B(DPAD_RIGHT)), 0);
+    /* the d-pad also drives the left stick (PS2: it moves Heather and the puzzle cursor), only while the stick rests */
+    { Sint16 x = 0, y = 0; sh3_dpad_stick(B(DPAD_UP), &x, &y); expect("d-pad up", (unsigned)(x == 0 && y == -32767), 1); }
+    { Sint16 x = 0, y = 0; sh3_dpad_stick(B(DPAD_RIGHT), &x, &y); expect("d-pad right", (unsigned)(x == 32767 && y == 0), 1); }
+    { Sint16 x = 0, y = 0; sh3_dpad_stick(B(DPAD_DOWN) | B(DPAD_LEFT), &x, &y);
+      expect("d-pad diagonal", (unsigned)(x == -23170 && y == 23170), 1); }
+    { Sint16 x = 3000, y = -2000; sh3_dpad_stick(0, &x, &y); expect("no d-pad keeps the stick", (unsigned)(x == 3000 && y == -2000), 1); }
+    { Sint16 x = 20000, y = 0; sh3_dpad_stick(B(DPAD_LEFT), &x, &y); expect("tilted stick wins", (unsigned)(x == 20000 && y == 0), 1); }
+    { Sint16 x = 0, y = 0; sh3_dpad_stick(B(DPAD_LEFT) | B(DPAD_RIGHT), &x, &y); expect("opposites cancel", (unsigned)(x == 0 && y == 0), 1); }
     for (unsigned raw = 0; raw < (1u << SDL_CONTROLLER_BUTTON_MAX); raw++)
         if (sh3_pad_buttons(raw) & ~0xfffu) { printf("FAIL raw %x: DI index above 11\n", raw); fails++; break; }
     puts(fails ? "pad mapping: FAILED" : "pad mapping: ok");

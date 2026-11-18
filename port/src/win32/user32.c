@@ -104,7 +104,16 @@ U(MsgWaitForMultipleObjects) {
     if (c == g_main_cpu) g_t_wait += SDL_GetPerformanceCounter() - t0;
     STDRET(5, r);
 }
-U(GetCursorPos) { HOSTFN; W32(ARG(1), 0); W32(ARG(1) + 4, 0); STDRET(1, 1); }
+// The puzzle cursor (rt/game_fixes.c) is the only pointer: the pad moves it while a puzzle is up, else (0, 0).
+U(GetCursorPos) {
+    HOSTFN;
+    extern int sh3_vcursor_on(void);
+    extern void sh3_vcursor_pixels(int *px, int *py);
+    int x = 0, y = 0;
+    if (sh3_vcursor_on()) sh3_vcursor_pixels(&x, &y);
+    W32(ARG(1), (uint32_t)x); W32(ARG(1) + 4, (uint32_t)y);
+    STDRET(1, 1);
+}
 U(SetCursorPos) { STDRET(2, 1); }
 U(ClientToScreen) { STDRET(2, 1); }
 U(GetClientRect) {
@@ -174,7 +183,12 @@ U(wvsprintfA) {
     STDRET(3, n);
 }
 U(GetWindowThreadProcessId) { HOSTFN; if (ARG(2)) W32(ARG(2), 0x10); STDRET(2, 0x100); }
-U(GetKeyState) { STDRET(1, 0); }
+// VK_LBUTTON is cross while the puzzle cursor is up (the game tests the low byte: 0xff80 when down, as Windows gives).
+U(GetKeyState) {
+    HOSTFN;
+    extern int sh3_vcursor_click(void);
+    STDRET(1, ARG(1) == 1 && sh3_vcursor_click() ? 0xff80u : 0u);
+}
 U(FindWindowA) { STDRET(2, 0); }   // no other running instance
 U(IsIconic) { STDRET(1, 0); }
 U(SetFocus) { HOSTFN; STDRET(1, ARG(1)); }

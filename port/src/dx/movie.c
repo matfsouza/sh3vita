@@ -436,19 +436,20 @@ static void m565_begin(void) {
     SDL_UnlockMutex(s_m565_mx);
 }
 static int m565_queued(int k) { for (unsigned n = s_m565_qh; n != s_m565_qt; n++) if (s_m565_q[n % N565] == k) return 1; return 0; }
-static void m565_put(Movie *m, plm_frame_t *f) {
-    if (((int)f->width | (int)f->height) & 15) return;   // ponytail: sizes not a multiple of 16: fall back to the main thread conversion
+// Returns 1 when the frame is queued for display: the guest copy is then never shown (resource.c tex_upload uses this one).
+static int m565_put(Movie *m, plm_frame_t *f) {
+    if (((int)f->width | (int)f->height) & 15) return 0;   // ponytail: sizes not a multiple of 16: fall back to the main thread conversion
     if (!s_m565_mx) s_m565_mx = SDL_CreateMutex();
     if (!s_m565_w) { s_m565_w = (unsigned)m->w; s_m565_h = (unsigned)m->h; }
-    if (s_m565_w != (unsigned)m->w || s_m565_h != (unsigned)m->h) return;   // ponytail: buffers sized for the first movie (all 640x480)
+    if (s_m565_w != (unsigned)m->w || s_m565_h != (unsigned)m->h) return 0;   // ponytail: buffers sized for the first movie (all 640x480)
     int k = 0;
     SDL_LockMutex(s_m565_mx);
     while (k < N565 && (s_m565_busy[k] || m565_queued(k))) k++;
     if (k < N565) s_m565_busy[k] = 1;
     else s_m565_dropped++;
     SDL_UnlockMutex(s_m565_mx);
-    if (k == N565) return;   // the renderer did not return the buffers: frame skipped
-    if (!s_m565[k] && !(s_m565[k] = malloc((size_t)m->w * m->h * 4))) { s_m565_busy[k] = 0; return; }
+    if (k == N565) return 0;   // the renderer did not return the buffers: frame skipped
+    if (!s_m565[k] && !(s_m565[k] = malloc((size_t)m->w * m->h * 4))) { s_m565_busy[k] = 0; return 0; }
     uint64_t t0 = SDL_GetPerformanceCounter();
     s_m565_pts[k] = f->time;
     // 32-bit colour (16-bit showed bands in the dark scenes) and bottom row first: the guest path writes the frame as
@@ -461,6 +462,7 @@ static void m565_put(Movie *m, plm_frame_t *f) {
     s_m565_busy[k] = 0;
     SDL_UnlockMutex(s_m565_mx);
     if (!(++s_m565_n % 75)) { rt_log("[movie] 565 conversion (movie thread): %.1f ms\n", s_m565_ms / 75); s_m565_ms = 0; }
+    return 1;
 }
 // Main thread: next 565 frame in display order not yet uploaded (NULL: nothing new). One frame per call, so every decoded frame is shown;
 // if more than 3 are waiting the oldest are dropped (latency stays under ~100 ms). The buffer stays reserved until *busy drops to 0.
@@ -517,7 +519,7 @@ uint8_t *movie_565_take(uint32_t w, uint32_t h, volatile int **busy) {
 }
 #else
 #define frame_to_bgra plm_frame_to_bgra
-#define m565_put(m, f) ((void)0)
+#define m565_put(m, f) 0
 #define m565_begin() ((void)0)
 #endif
 
@@ -534,8 +536,10 @@ static void push_frame(Movie *m, CPU *c, plm_frame_t *f) {
     sp->busy = 1; sp->com.refs = 1;
     uint32_t pitch = (uint32_t)m->w * 4, size = pitch * (uint32_t)m->h;
     uint64_t t0 = SDL_GetPerformanceCounter();
-    frame_to_bgra(f, mb + sp->buf + (size - pitch), -(int)pitch);   // DIB bas-haut
-    m565_put(m, f);
+    // Vita: the frame shown is the one m565_put converts; the guest's copy of the sample would be a second full
+    // conversion (~12 ms) that nothing displays, and with it the output thread could not keep up with 30 frames/s
+    // (24.5 delivered/s in the Vita logs). It is still made when the direct path cannot take the frame.
+    if (!m565_put(m, f)) frame_to_bgra(f, mb + sp->buf + (size - pitch), -(int)pitch);   // DIB bas-haut
     uint64_t t1 = SDL_GetPerformanceCounter();
     sp->len = size;
     sp->t0 = (int64_t)(f->time * 1e7);

@@ -2,6 +2,7 @@
 //. Installed by recomp/image_patches.py (overrides, wraps, hooks); layout math in ws_layout.h.
 #include "rt.h"
 #include "ws_layout.h"
+#include "ws_world.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -100,15 +101,30 @@ static uint32_t guest_call0(CPU *c, void (*f)(CPU *)) {
 // 0x682ba0 GsX(x): PS2 2D x -> render-target pixels, in ST(0). The 2D (menus, HUD, logos) goes into a centred 4:3
 // box; full-screen effects keep the whole width (stretch > 0 while they draw; stretch_next for single call sites).
 static int stretch, stretch_next;
+int g_ws_ui_boxed;   // 1 when the last GsX call put its x in the centred 4:3 box
 void F_00682ba0_orig(CPU *c);
 void F_00402ba0(CPU *c);   // current target width
 void F_00402bc0(CPU *c);   // current target height
+// 0x59ef90 (cdecl): effect system point -> GS. Its 4th argument receives the integer GS x, y, z (ws_world.h).
+static WsWorld s_world;
+static unsigned s_world_hits;
+extern unsigned g_frame;
+void F_0059ef90_orig(CPU *c);
+void ws_world_proj(CPU *c) {
+    uint8_t *const mb = g_mem;
+    uint32_t out = R32(c->esp + 16);
+    F_0059ef90_orig(c);
+    if (out) ws_world_add(&s_world, g_frame, R32(out));
+}
 void ws_gsx(CPU *c) {
     uint8_t *const mb = g_mem;
     int x = (int)R32(c->esp + 4);
+    int world = ws_world_caller(R32(c->esp)) && ws_world_has(&s_world, g_frame, (uint32_t)x);
+    if (world && !(s_world_hits++ % 2000)) rt_log("[ws] world effect point kept at full width (%u so far)\n", s_world_hits);
     F_00682ba0_orig(c);
-    int full = stretch > 0 || stretch_next;
+    int full = stretch > 0 || stretch_next || world;
     stretch_next = 0;
+    g_ws_ui_boxed = !full;   // the next pre-transformed draw is boxed 2D (d3d8/device.c ui_box_draw)
     if (full) return;
     uint32_t w = guest_call0(c, F_00402ba0), h = guest_call0(c, F_00402bc0);
     ST(0) = ws_gs_x(x, (int)w, (int)h, 0);

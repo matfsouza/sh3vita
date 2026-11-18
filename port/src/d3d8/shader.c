@@ -54,6 +54,9 @@ uint32_t vs_create(uint32_t decl, uint32_t func) {
     } else {
         v->is_fixed = 1;
         d3d_log_once("function-less vertex shader (declaration + fixed pipeline)");
+        rt_log("[vs] fixed-pipeline declaration 0x%x (bgra %x):", (unsigned)(i << 1) | 1u, bgra);
+        for (int k = 0; k < v->ndecl; k++) rt_log(" %08x", v->decl[k]);
+        rt_log("\n");
     }
     v->handle = (uint32_t)(i << 1) | 1u;
     v->source_hash = source_hash(v->glsl);

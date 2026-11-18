@@ -268,3 +268,58 @@ void fix_pause_uv(CPU *c) {
     W32(G_PAUSE_UV, rt_u32f((float)want_w / (float)tex_w));
     W32(G_PAUSE_UV + 4, rt_u32f((float)want_h / (float)tex_h));
 }
+
+// Puzzle cursor (the Shakespeare books, keypads and the other close-up puzzles: 11 screens call 0x4dd2f0 every frame
+// while their cursor is up). The PC game's own pad-cursor sprite never shows on the port, so the port drives the
+// game's mouse path instead, as a mouse on the PC would: the left stick / d-pad move a virtual pointer that
+// GetCursorPos returns (user32.c), cross is the left button that GetKeyState reports, and the game draws its mouse
+// cursor and uses that position (0x600920 -> 0x4dd300 -> the cursor at [0xbb3184]).
+#include "vcursor.h"
+#define G_PAD_CURSOR_X  0xbb3184u   // float, units 0..512
+#define G_PAD_CURSOR_Y  0xbb3188u   // float, units 64..448
+#define G_MOUSE_SHOWN   0x70e6418u  // byte: the mouse cursor is drawn
+#define G_MOUSE_UNTIL   0x70e6414u  // timeGetTime limit of the mouse cursor (3 s after the last move)
+static unsigned puzzle_frame;       // g_frame + 1 of the last 0x4dd2f0 call, 0 = never
+static int vc_on, vc_click;
+static VCursor vc;
+static unsigned vc_ticks;
+void F_004dd2f0_orig(CPU *c);
+void fix_puzzle_cursor(CPU *c) {
+    extern unsigned g_frame;
+    puzzle_frame = g_frame + 1;
+    F_004dd2f0_orig(c);
+}
+int sh3_vcursor_on(void) { return vc_on; }
+int sh3_vcursor_click(void) { return vc_on && vc_click; }
+void sh3_vcursor_pixels(int *px, int *py) {
+    uint8_t *const mb = g_mem;
+    int w = (int)R32(0x72c780u), h = (int)R32(0x72c784u);   // the game's client size (0x4168e0 / 0x4168f0)
+    if (w <= 0 || h <= 0) { w = 960; h = 544; }
+    vcursor_pixels(&vc, w, h, px, py);
+}
+// Called with every pad read (dinput.c): sx, sy = left stick with the d-pad folded in; cross = the cross button.
+// Returns 1 while a puzzle cursor is up (the pad then sends no action button, stick or d-pad to the game).
+int sh3_vcursor_update(int sx, int sy, int cross) {
+    uint8_t *const mb = g_mem;
+    extern unsigned g_frame;
+    int on = puzzle_frame && g_frame + 1 - puzzle_frame <= 3;
+    unsigned now = SDL_GetTicks();
+    if (on && !vc_on) {   // start where the game's cursor is
+        vcursor_reset(&vc, rt_f32(R32(G_PAD_CURSOR_X)), rt_f32(R32(G_PAD_CURSOR_Y)));
+        vc_ticks = now;
+        rt_log("[puzzle-cursor] on frame %u at %.0f,%.0f\n", g_frame, (double)vc.x, (double)vc.y);
+    }
+    if (!on && vc_on) {
+        W8(G_MOUSE_SHOWN, 0);
+        W32(G_MOUSE_UNTIL, 0);
+        rt_log("[puzzle-cursor] off frame %u\n", g_frame);
+    }
+    vc_on = on;
+    vc_click = on && cross;
+    if (!on) return 0;
+    vcursor_step(&vc, sx, sy, (float)(now - vc_ticks) * 0.001f);
+    vc_ticks = now;
+    W8(G_MOUSE_SHOWN, 1);              // the game hides an idle mouse after 3 s: keep the pointer up
+    W32(G_MOUSE_UNTIL, 0xffffff00u);
+    return 1;
+}

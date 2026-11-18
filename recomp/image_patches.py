@@ -91,6 +91,10 @@ IMAGE_PATCHES = [
     # DrawPrimitiveUP (stdcall, 5 arguments) becomes `add esp, 0x14`: same stack, the text is still drawn.
     Patch(0x5E8401, bytes.fromhex("ff9120010000"), bytes.fromhex("83c414909090"), "no black box behind the pause menu"),
     Patch(0x5E85E4, bytes.fromhex("ff9120010000"), bytes.fromhex("83c414909090"), "no black box behind the pause menu"),
+    # Puzzle cursor (moved by the left stick / d-pad, 0x4dce70): its init 0x4dd270 sets the speed of both axes to 210
+    # units/s (0..512 across the picture). 150 is easier to aim on the Vita's small stick.
+    Patch(0x4DD2B2, bytes.fromhex("00005243"), bytes.fromhex("00001643"), "slower puzzle cursor (x)"),
+    Patch(0x4DD2BC, bytes.fromhex("00005243"), bytes.fromhex("00001643"), "slower puzzle cursor (y)"),
 ]
 ADDR_OVERRIDES = {
     0x416AE0: "ws_set_display",    # display mode (w, h): always the Vita screen, 960x544
@@ -131,7 +135,9 @@ ADDR_WRAPS = {
     0x479E30: "ws_fx_haze",
     0x4794B0: "ws_fx_fog",
     0x49FAC0: "ws_fx_occlusion",
+    0x59EF90: "ws_world_proj",        # effect system world -> GS projection (blood, footprints): full width (widescreen.c)
     0x5F09F0: "fix_no_safe_mode",     # never "A crash occurred..." / 640x480 safe mode (game_fixes.c)
+    0x4DD2F0: "fix_puzzle_cursor",    # puzzle cursor up this frame: the pad drives the mouse pointer (game_fixes.c)
 }
 # 0x458010 "diag_model_walk" is no longer installed: the bug is fixed (guest memory) and
 # its full walk of every loaded model plus the file re-read cost part of the 160-300 ms hitches at cutscene cuts

@@ -65,6 +65,20 @@ void plat_gl_swap(void) {
     static const char *shots;
     if (!shots) shots = getenv("SH3_SHOT") ? getenv("SH3_SHOT") : "";
     n++;
+    {   // F9: screenshot of this frame and a log of every draw of the next two (d3d8/device.c draw_dump)
+        extern volatile int g_drawdump;
+        static int f9_was;
+        const Uint8 *k = SDL_GetKeyboardState(NULL);
+        static int dump_at = -1; if (dump_at < 0) dump_at = getenv("SH3_DRAWDUMP") ? atoi(getenv("SH3_DRAWDUMP")) : 0;
+        int f9 = (k && k[SDL_SCANCODE_F9]) || (dump_at && n == (unsigned)dump_at);
+        if (g_drawdump > 0) g_drawdump--;
+        if (f9 && !f9_was) {
+            char path[64]; snprintf(path, sizeof path, "shot_f9_%u.tga", n); plat_shot_raw(path);
+            rt_log("[draw] ---- F9 at present %u ----\n", n);
+            g_drawdump = getenv("SH3_DRAWDUMPN") ? atoi(getenv("SH3_DRAWDUMPN")) : 2;
+        }
+        f9_was = f9;
+    }
     for (const char *s = shots; *s;) {
         char *end;
         unsigned want = (unsigned)strtoul(s, &end, 10);

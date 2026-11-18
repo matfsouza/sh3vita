@@ -15,9 +15,12 @@ static LONG WINAPI watch_handler(EXCEPTION_POINTERS *e) {
     if (code == EXCEPTION_ACCESS_VIOLATION && e->ExceptionRecord->ExceptionInformation[0] == 1) {
         uintptr_t a = e->ExceptionRecord->ExceptionInformation[1];
         if (a < (uintptr_t)s_page || a >= (uintptr_t)s_page + 4096) return EXCEPTION_CONTINUE_SEARCH;
-        if (a >= s_lo && a < s_hi && s_hits < 12) {
-            void *st[10];
-            USHORT n = RtlCaptureStackBackTrace(0, 10, st, NULL);
+        extern volatile int g_drawdump;   // with SH3_WATCH_F9: only the writes of the frames F9 dumps
+        static int f9_only = -1;
+        if (f9_only < 0) f9_only = getenv("SH3_WATCH_F9") != NULL;
+        if (a >= s_lo && a < s_hi && s_hits < 40 && (!f9_only || g_drawdump)) {
+            void *st[16];
+            USHORT n = RtlCaptureStackBackTrace(0, 16, st, NULL);
             uintptr_t base = (uintptr_t)GetModuleHandleA(NULL);
             extern unsigned g_frame;
             s_hits++;
@@ -42,7 +45,7 @@ void rt_watch_start(void) {
     uint32_t addr = (uint32_t)strtoul(e, NULL, 16);
     DWORD old;
     s_lo = (uintptr_t)g_mem + addr;
-    s_hi = s_lo + 32;
+    s_hi = s_lo + (getenv("SH3_WATCH_LEN") ? strtoul(getenv("SH3_WATCH_LEN"), NULL, 0) : 32);
     s_page = (uint8_t *)(s_lo & ~(uintptr_t)4095);
     AddVectoredExceptionHandler(1, watch_handler);
     VirtualProtect(s_page, 4096, PAGE_READONLY, &old);

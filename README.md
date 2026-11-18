@@ -5,9 +5,9 @@
   </picture>
 </p>
 
-# Silent Hill 3 for PS Vita
+# Silent Hill 3 Enhanced Edition for PS Vita
 
-**Version 1.0** — an unofficial fan port of the Windows PC version of Silent Hill 3 to the PS Vita.
+**Version 1.1** — an unofficial fan port of the Windows PC version of Silent Hill 3 to the PS Vita.
 You play it with **your own copy** of the PC game: no game files are included here or in the VPK.
 
 **[Download the latest release](../../releases/latest)**: the VPK for the Vita and the data preparer.
@@ -25,7 +25,30 @@ You play it with **your own copy** of the PC game: no game files are included he
 - PC-version fixes rebuilt for the Vita: no cutscene bars, 2D menus kept in 4:3, full-screen pause background,
   no black box behind the pause menu.
 - Movies played by the port itself, scaled for the Vita.
-- Optional: PS2 sound pitch for the effects, the PS2 audio pack and widescreen movies (see [Extras](#extras)).
+- Sound effects back at the **PS2 pitch** by default; optional PS2 sounds from the community audio pack and
+  widescreen movies (see [Extras](#extras)).
+- Puzzles with an on-screen cursor driven by the stick or the D-pad (✕ clicks), map and inventory in their PS2 4:3
+  frame with black side bands, and saves that survive a crash while writing.
+
+### Why "Enhanced Edition"
+
+It is not a plain copy of the PC release: the port puts back what the PS2 version had and the PC version lost
+(sound pitch, the PS2 audio, the 4:3 framing of 2D screens, the save point seal at full colour), and adds what
+playing on a Vita needs (controls, a puzzle cursor, the screen layout, safe saves).
+
+## What's new in 1.1
+
+- **Puzzles:** the cursor now appears; move it with the left stick or the D-pad and click with ✕. The bookstore
+  puzzle can be finished.
+- **D-pad** works as the left stick everywhere.
+- **Map:** Heather's position arrow is shown again, at a size closer to the PS2; map and inventory stay in 4:3 with
+  black side bands, and map marks no longer spill into the bands.
+- **Save points:** the red seal is drawn at full colour again, so you can find where to save. The same fix brings
+  back other 3D sprite effects that were missing.
+- **Saves and settings** are written to a temporary file first, so a crash during a save keeps your previous save.
+- **Movies:** less work per frame when playing the FMVs.
+- The game is now called **Silent Hill 3 Enhanced Edition** on the Vita (same title ID: install over 1.0, your
+  saves stay).
 
 ## What you need
 
@@ -69,7 +92,7 @@ You play it with **your own copy** of the PC game: no game files are included he
      ...
    ```
 
-4. Install `sh3vita.vpk` with VitaShell and start Silent Hill 3 from the LiveArea.
+4. Install `sh3vita.vpk` with VitaShell and start Silent Hill 3 Enhanced Edition from the LiveArea.
 
 Saves and settings stay in `ux0:data/sh3/`. The log of the last launch is `ux0:data/sh3/sh3log.txt`.
 

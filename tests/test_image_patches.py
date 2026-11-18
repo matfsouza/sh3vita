@@ -67,3 +67,13 @@ def test_every_patch_matches_the_supported_exe():
     text = next(s for s in pe.sections if s[0] == ".text")
     for va in list(ip.HOOKS) + list(ip.ADDR_OVERRIDES) + list(ip.ADDR_WRAPS):
         assert text[1] <= va < text[1] + text[2], hex(va)
+
+
+def test_puzzle_cursor_is_slower():
+    """Puzzle cursor (0x4dd270 init, speed x and y at 0xbb316c/0xbb3170): 210 -> 150 units/s, both axes."""
+    import struct
+    by_va = {p.va: p for p in ip.IMAGE_PATCHES}
+    for va in (0x4DD2B2, 0x4DD2BC):
+        p = by_va[va]
+        assert struct.unpack("<f", p.old)[0] == 210.0
+        assert struct.unpack("<f", p.new)[0] == 150.0

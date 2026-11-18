@@ -283,6 +283,7 @@ M(dev, GetDeviceState) {
             if (motion&1u) { lsx=24000;lsy=-18000; } // forward circle, bounded to the tour interval
             if (motion&2u) rsx=16000;
         }
+        sh3_dpad_stick(raw_buttons, &lsx, &lsy);   // d-pad = left stick (walking, puzzle cursor), as on the PS2
         g_camera_pad_x = rsx; g_camera_pad_y = rsy;
         g_camera_pad_active = !cur && !menu && !ui;
         g_camera_pad_frame = g_frame;
@@ -336,6 +337,14 @@ M(dev, GetDeviceState) {
         // port fixes) and remapping stay out of reach. Button Config open (boot_credits.c): only circle, to go back.
         { extern int sh3_btncfg_open(void);
           if (sh3_btncfg_open()) { mapped &= 1u << SH3_DI_CANCEL; W32(p + 32, 0xffffffffu); } }
+        {   // puzzle cursor up (game_fixes.c): the stick / d-pad move the pointer and cross clicks; circle still backs out
+            extern int sh3_vcursor_update(int sx, int sy, int cross);
+            if (sh3_vcursor_update(lsx, lsy, (raw_buttons >> SDL_CONTROLLER_BUTTON_A) & 1u)) {
+                mapped &= ~(1u << SH3_DI_ACTION);
+                W32(p + 0, axis(self, 0, 0)); W32(p + 4, axis(self, 1, 0));
+                W32(p + 32, 0xffffffffu);
+            }
+        }
         for (int i = 0; i < 12 && 48u + (uint32_t)i < n; i++) {
             if (mapped & (1u << i)) W8(p + 48 + (uint32_t)i, 0x80);
         }
