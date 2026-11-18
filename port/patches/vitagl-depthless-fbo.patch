@@ -1,0 +1,45 @@
+--- a/source/gxm.c
++++ b/source/gxm.c
+@@ -69,6 +69,14 @@
+ GLboolean dirty_query = GL_FALSE; // Flag whether occlusion queries needs results
+ static GLboolean needs_end_scene = GL_FALSE; // Flag for gxm end scene requirement at scene reset
+ static GLboolean needs_scene_reset = GL_TRUE; // Flag for when a scene reset is required
++// sh3vita: framebuffer scenes begun without a depth/stencil surface (no forced load/store) while the app says the next
++// draws do not need depth (vglSetFboDepthless). A depthless scene is restarted when depth becomes needed.
++static GLboolean vgl_fbo_depthless = GL_FALSE, scene_depthless = GL_FALSE;
++void vglSetFboDepthless(GLboolean v) {
++	if (v == vgl_fbo_depthless) return;
++	vgl_fbo_depthless = v;
++	if (!v && scene_depthless) dirty_framebuffer = GL_TRUE;
++}
+ 
+ SceGxmContext *gxm_context; // sceGxm context instance
+ GLenum vgl_error = GL_NO_ERROR; // Error returned by glGetError
+@@ -613,6 +621,7 @@
+ 
+ 		// Starting drawing scene
+ 		is_rendering_display = !active_write_fb;
++		scene_depthless = !is_rendering_display && vgl_fbo_depthless;
+ 		if (is_rendering_display) { // Default framebuffer is used
+ 			if (system_app_mode) {
+ 				sceSharedFbBegin(shared_fb, &shared_fb_info);
+@@ -686,7 +695,7 @@
+ #endif
+ 					NULL, NULL, NULL,
+ 					&active_write_fb->colorbuffer,
+-					active_write_fb->depthbuffer_ptr);
++					scene_depthless ? NULL : active_write_fb->depthbuffer_ptr);
+ 			if (r) last_scene_error = r;
+ #ifdef LOG_ERRORS
+ 			if (r)
+--- a/source/vitaGL.h
++++ b/source/vitaGL.h
+@@ -1280,6 +1280,8 @@
+ 
+ // Change the scenes per frame value to use for the display and fbos rendertargets. Default value: 1, 1.
+ void vglSetupRenderTargetScenesNum(uint8_t display_size, uint8_t fbo_size);
++// sh3vita: next framebuffer scenes begin without a depth/stencil surface (no forced load/store).
++void vglSetFboDepthless(GLboolean depthless);
+ 
+ // Change what kind of vertex buffer objects are considered eligible for scratch memory usage in order to reduce allocation costs. Requires USE_SCRATCH_MEMORY.
+ void vglSetupScratchMemory(GLboolean scratch_for_dynamic, GLboolean scratch_for_stream);

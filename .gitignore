@@ -1,0 +1,19 @@
+# Arquivos do jogo e tudo derivado do sh3.exe: nunca versionar.
+game/
+port/gen/
+re/out/
+build/
+*.arc
+*.afs
+*.000
+# Arte fornecida pelo usuário (arte oficial da Konami) e o que é gerado dela: só no VPK, nunca no repositório
+port/assets/art/
+port/livearea_user/
+# Ferramentas locais
+.venv/
+__pycache__/
+.pytest_cache/
+.superpowers/
+# Obsidian: o estado da janela muda a cada abertura
+docs/.obsidian/workspace*.json
+docs/.obsidian/cache
