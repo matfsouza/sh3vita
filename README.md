@@ -10,6 +10,10 @@
 **Version 1.2** — an unofficial fan port of the Windows PC version of Silent Hill 3 to the PS Vita.
 You play it with **your own copy** of the PC game: no game files are included here or in the VPK.
 
+**The whole of Silent Hill 3 in your hands:** native code, a locked 30 FPS, 16:9, the PS2's effects, sound and
+controls, and fixes the PC release never got. Each version brings it closer to the definitive way to play Silent
+Hill 3 on the go.
+
 **[Download the latest release](../../releases/latest)**: the VPK for the Vita and the data preparer.
 
 > **Status:** this port was made with the help of Claude (Anthropic) and is still in development: expect bugs.
@@ -17,12 +21,14 @@ You play it with **your own copy** of the PC game: no game files are included he
 
 ## Features
 
-- Runs the full game natively on the Vita: the PC executable is statically recompiled to ARM, no emulation.
-- Targets a locked **30 FPS**, the PS2 frame rate.
+- **Native, not emulated:** the PC executable is statically recompiled to ARM and runs straight on the Vita's CPU.
+- A locked **30 FPS**, the PS2 frame rate, with no shader freezes: the shaders ship compiled in the VPK.
 - Native Vita resolution (960×544), **16:9**, with the 3D scene rendered close to the PS2's 640×448.
 - The PS2-era effects kept: flashlight shadows, fog, noise filter, particles.
-- **Three control layouts** on a Controls screen in the options: the Vita layout or the PS2 type B layout, with L1 /
-  R1 on the rear touch pad or on the screen (see [Controls](#controls)).
+- **Three control layouts** on a Controls screen: the Vita layout, or the PS2 type B controller with L1 / R1 on the
+  rear touch pad or on the screen. The screen speaks all **eight languages of the game** (see [Controls](#controls)).
+- Every option page of the game, **Extra Options** included (blood colour, noise effect, low health indicator).
+- The **Silent Hill 2 easter eggs** of the original game.
 - PC-version fixes rebuilt for the Vita: no cutscene bars, 2D menus kept in 4:3, full-screen pause background,
   no black box behind the pause menu.
 - Movies played by the port itself, scaled for the Vita.
@@ -33,22 +39,28 @@ You play it with **your own copy** of the PC game: no game files are included he
 
 ### Why "Enhanced Edition"
 
-It is not a plain copy of the PC release: the port puts back what the PS2 version had and the PC version lost
-(sound pitch, the PS2 audio, the 4:3 framing of 2D screens, the save point seal at full colour), and adds what
-playing on a Vita needs (controls, a puzzle cursor, the screen layout, safe saves).
+The port goes past a copy of the PC release. It puts back what the PS2 version had and the PC version lost: the
+sound pitch, the PS2 audio, the PS2 controller layout, the 4:3 framing of 2D screens, the save point seal at full
+colour. And it adds what playing on a Vita needs: touch controls for L1 / R1, a puzzle cursor, the 16:9 layout,
+safe saves.
 
 ## What's new in 1.2
 
-- **No more shader freezes:** the game used to stop for up to 1.7 seconds the first time it drew something new
-  (shooting, some cutscenes, new rooms). The VPK now ships the shaders already compiled, and anything missing is
-  compiled in the background while the game keeps running.
-- **Controls screen with three layouts** (Options > Button Config): Vita, PS2 rear and PS2 front. The PS2 layouts
-  follow the PS2 type B controller: □ runs, ○ flashlight and back, △ map, SELECT items, L / R as L2 / R2, and L1 / R1
-  on the left / right half of the rear touch pad or of the screen. Touch both halves for the quick 180° turn.
-- **Options pages:** L and R turn the page, so **Extra Options** (blood colour, noise effect, low health indicator)
-  can be reached. Running no longer zooms the camera.
+- **No more shader freezes.** The game used to stop for up to 1.7 seconds the first time it drew something new
+  (shooting an enemy, some cutscenes, a new room). The VPK now ships the shaders already compiled, and anything
+  missing compiles in the background while you keep playing.
+- **Controls screen with three layouts** (Options > Button Config, ◀ / ▶ to change), in all eight languages of the
+  game:
+  - **Vita:** the layout of 1.0 and 1.1.
+  - **PS2 rear:** the PS2 type B controller. □ runs, ○ turns on the flashlight and goes back in menus, △ opens the
+    map, SELECT the items, L / R work as L2 / R2, and the left / right halves of the rear touch pad work as
+    L1 / R1. Touch both halves for the quick 180° turn.
+  - **PS2 front:** the same, with L1 / R1 on the left / right halves of the screen.
+- **Every options page:** L and R turn the page, so **Extra Options** is one press away. Running no longer zooms
+  the camera.
+- **Silent Hill 2 easter eggs:** the four references of the original game play again. Try the blocked toilet in the
+  women's washroom of the mall.
 - **Crash fixed** when opening Options from the inventory.
-- **Silent Hill 2 references:** the four easter eggs of the original game play again.
 - New loading and preparation screens and LiveArea artwork.
 
 ## What you need
@@ -117,6 +129,21 @@ Optional arguments of `prepare_data.py`:
 
 Pick a layout on the Controls screen (Options > Button Config, ◀ / ▶ to change). Your choice is saved at once.
 
+<table>
+  <tr>
+    <td><img src="docs/images/controls/controls-ps2-rear.png" alt="Controls screen, PS2 rear touch layout"></td>
+    <td><img src="docs/images/controls/controls-ps2-front.png" alt="Controls screen, PS2 screen touch layout"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>PS2 rear</b>: L1 / R1 on the halves of the rear touch pad</td>
+    <td align="center"><b>PS2 front</b>: L1 / R1 on the halves of the screen</td>
+  </tr>
+</table>
+
+The Controls screen is translated into every language of the game (English, French, German, Italian, Spanish,
+Japanese, Korean and Chinese): each translation has its own picture of every layout, and the screen follows the
+language you pick in the game.
+
 | Vita | Vita layout | PS2 layouts (type B) |
 |---|---|---|
 | Left stick / D-pad | Move, menus | Move, menus |
@@ -126,7 +153,7 @@ Pick a layout on the Controls screen (Options > Button Config, ◀ / ▶ to chan
 | △ | Inventory | Map |
 | SELECT | Map | Inventory |
 | R | Ready weapon | Ready weapon (R2) |
-| L | Camera behind | Camera behind (L2) |
+| L | Search view | Search view (L2) |
 | Rear touch, left / right half | — | L1 / R1 side steps (PS2 rear) |
 | Screen, left / right half | — | L1 / R1 side steps (PS2 front) |
 | START | Pause menu | Pause menu |
