@@ -125,6 +125,20 @@ Optional arguments of `prepare_data.py`:
 | `--movies GAME_FOLDER` | Takes the 16:9 movies from a copy of the game where *Widescreen movies for Silent Hill 3* is installed. |
 | `--ffmpeg FFMPEG_EXE` | Scales movies wider than 768×432 down for the Vita (smoother playback). |
 
+#### About the sound, and Heather's voice
+
+The port does **not** swap Heather's voice for a different one. Here is what happened to the sound on PC:
+
+- **Cutscene dialogue and music:** the PC release copied them from the PS2 byte for byte. Heather's lines in the
+  cutscenes are the original PS2 recordings on both, and the port plays them untouched.
+- **Sound effects during play** (footsteps, monsters, weapons, and Heather's own sounds in gameplay, such as her death
+  cry): this is what the PC release lost. They were converted from the PS2 without fixing each sound's playback
+  speed, so they play slower and deeper, and they were compressed, so they sound muddy.
+
+The port gives that back. By default it plays the PC's effects at the PS2 speed and pitch again. With
+`--audio-pack`, the effects come from the PS2 itself, taken from the original disc by the community *Audio
+Enhancement Pack*. Either way you hear Heather the way she sounded on the PS2.
+
 ## Controls
 
 Pick a layout on the Controls screen (Options > Button Config, ◀ / ▶ to change). Your choice is saved at once.
@@ -163,18 +177,33 @@ page in every layout.
 
 ## Shaders
 
-The Vita has to compile each shader (the small GPU programs behind every effect) before the game can draw with it.
-The VPK ships every shader I could reach in my own playthroughs, already compiled. If the game meets one that is not
-in the VPK, you may notice a short hitch, or an object showing up a moment late: the game is compiling that shader.
-It happens **once**. The game keeps the result in `ux0:data/sh3/`, so the same place runs smoothly from then on, on
-this playthrough and on every replay.
+**In short:** a small hitch the first time you see a new effect is normal. It happens once, and you can help remove
+it for everyone.
 
-### Help the next player
+**What is a shader?** Every effect you see (fog, the flashlight, blood, fire) needs a small recipe for the Vita's
+graphics chip. Before the Vita can use a recipe, it has to prepare it once. That preparation is what causes the
+hitch.
 
-Each shader the game had to compile on your Vita is also written to `ux0:data/sh3/shaders_seen.lst`. If that file
-exists, attach it to the pinned **Shader collection** issue (zip it if GitHub refuses the extension). I check every
-entry, add the new ones to the list, and the next VPK ships them compiled, so the next player never meets that hitch.
-The file holds only shader text from the game itself, no saves and nothing personal.
+**What I did:** I played through the game and prepared every recipe I could reach. They all come inside the VPK,
+ready to use.
+
+**What can still happen:** if you reach an effect I never saw, the game prepares that recipe right there. You may
+notice a short hitch, or something appearing a moment late. The game then keeps that recipe on your memory card, so
+**the same spot never hitches again**: not later in that playthrough, not when you replay the game.
+
+### Help the next player: the Shader collection
+
+Each recipe your Vita had to prepare is also written down in a small file. Send me that file and the next version
+ships those recipes ready, so nobody has to wait for them again. Step by step:
+
+1. Play normally.
+2. Connect your Vita to your PC (VitaShell, USB) and open `ux0:data/sh3/`.
+3. Look for a file named **`shaders_seen.lst`**. No file means your Vita never had to prepare anything: you are done.
+4. If it is there, open the pinned **Shader collection** issue on this page and drag the file into a comment (zip it
+   if GitHub refuses it). Say where the hitch happened, if you remember.
+5. I check every recipe, add the new ones, and the next VPK has them ready for everyone.
+
+The file only holds those recipes, written by the game itself: no saves, nothing about you.
 
 ## How it works
 
