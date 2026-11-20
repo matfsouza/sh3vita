@@ -47,8 +47,8 @@ safe saves.
 ## What's new in 1.2
 
 - **No more shader freezes.** The game used to stop for up to 1.7 seconds the first time it drew something new
-  (shooting an enemy, some cutscenes, a new room). The VPK now ships the shaders already compiled, and anything
-  missing compiles in the background while you keep playing.
+  (shooting an enemy, some cutscenes, a new room). The VPK now ships every shader I could collect already compiled,
+  and anything missing compiles in the background while you keep playing (see [Shaders](#shaders)).
 - **Controls screen with three layouts** (Options > Button Config, ◀ / ▶ to change), in all eight languages of the
   game:
   - **Vita:** the layout of 1.0 and 1.1.
@@ -160,6 +160,21 @@ language you pick in the game.
 
 In the PS2 layouts, touching both halves at once does the quick 180° turn. In the options menu, L and R turn the
 page in every layout.
+
+## Shaders
+
+The Vita has to compile each shader (the small GPU programs behind every effect) before the game can draw with it.
+The VPK ships every shader I could reach in my own playthroughs, already compiled. If the game meets one that is not
+in the VPK, you may notice a short hitch, or an object showing up a moment late: the game is compiling that shader.
+It happens **once**. The game keeps the result in `ux0:data/sh3/`, so the same place runs smoothly from then on, on
+this playthrough and on every replay.
+
+### Help the next player
+
+Each shader the game had to compile on your Vita is also written to `ux0:data/sh3/shaders_seen.lst`. If that file
+exists, attach it to the pinned **Shader collection** issue (zip it if GitHub refuses the extension). I check every
+entry, add the new ones to the list, and the next VPK ships them compiled, so the next player never meets that hitch.
+The file holds only shader text from the game itself, no saves and nothing personal.
 
 ## How it works
 
