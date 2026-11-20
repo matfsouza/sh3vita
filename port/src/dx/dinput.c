@@ -11,9 +11,73 @@
 #include "pad_script.h"
 #endif
 #include "input_gate.h"
+#include "control_scheme.h"
+#include <stdio.h>
 #ifdef __vita__
 #include <psp2/touch.h>
 #endif
+
+// Control scheme (control_scheme.h), chosen on the Controls screen and kept in controls.txt in the game folder.
+unsigned g_world_frame;   // g_frame + 1 of the last game collision check (perf_natives.c): the player is in the world
+static int s_scheme = -1;
+static void scheme_path(char *out, size_t n) {
+#ifdef __vita__
+    snprintf(out, n, "ux0:data/sh3/controls.txt");
+#else
+    snprintf(out, n, "%s/controls.txt", g_game_dir);
+#endif
+}
+int sh3_control_scheme(void) {
+    if (s_scheme < 0) {
+        char path[600], buf[8] = {0};
+        scheme_path(path, sizeof path);
+        FILE *f = fopen(path, "rb");
+        if (f) { size_t got = fread(buf, 1, sizeof buf - 1, f); buf[got] = 0; fclose(f); }
+        s_scheme = sh3_scheme_parse(buf);
+        rt_log("[controls] scheme %d\n", s_scheme);
+    }
+    return s_scheme;
+}
+static void control_scheme_set(int scheme) {
+    char path[600];
+    s_scheme = scheme;
+    scheme_path(path, sizeof path);
+    FILE *f = fopen(path, "wb");
+    if (f) { fprintf(f, "%d\n", scheme); fclose(f); }
+    rt_log("[controls] scheme %d saved\n", scheme);
+}
+
+// A finger on each half of the screen and of the rear touch pad (both 1920 wide). The PC has no touch: the left mouse
+// button stands for the screen and the right one for the rear pad, on the half of the window under the pointer.
+static void read_touch(Sh3Touch *t) {
+    *t = (Sh3Touch){0, 0, 0, 0};
+#ifdef __vita__
+    static int started;
+    if (!started) {
+        sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+        sceTouchSetSamplingState(SCE_TOUCH_PORT_BACK, SCE_TOUCH_SAMPLING_STATE_START);
+        started = 1;
+    }
+    for (int port = 0; port < 2; port++) {
+        SceTouchData d;
+        if (sceTouchPeek(port == 0 ? SCE_TOUCH_PORT_FRONT : SCE_TOUCH_PORT_BACK, &d, 1) < 1) continue;
+        for (unsigned i = 0; i < d.reportNum && i < SCE_TOUCH_MAX_REPORT; i++) {
+            int right = sh3_touch_side(d.report[i].x, 1920);
+            if (port == 0) { if (right) t->front_r = 1; else t->front_l = 1; }
+            else { if (right) t->back_r = 1; else t->back_l = 1; }
+        }
+    }
+#else
+    extern SDL_Window *plat_sdl_window(void);
+    int x, y, w = 0, h = 0;
+    unsigned b = SDL_GetMouseState(&x, &y);
+    if (plat_sdl_window()) SDL_GetWindowSize(plat_sdl_window(), &w, &h);
+    if (w <= 0) return;
+    int right = sh3_touch_side(x, w);
+    if (b & SDL_BUTTON(SDL_BUTTON_LEFT)) { if (right) t->front_r = 1; else t->front_l = 1; }
+    if (b & SDL_BUTTON(SDL_BUTTON_RIGHT)) { if (right) t->back_r = 1; else t->back_l = 1; }
+#endif
+}
 
 typedef struct { ComObj com; } DInput;
 int g_camera_pad_x, g_camera_pad_y, g_camera_pad_active;
@@ -251,8 +315,8 @@ M(dev, GetDeviceState) {
         int cur = 0;
         // Options menu: the left stick acts as the d-pad (up/down = row, left/right = value), the right stick does nothing and L/R = previous/next page
         // (MoveLeft/MoveRight, buttons 6/7: the game's page change). ponytail: only while the menu is open, L/R stay buttons 4/5 elsewhere
-        extern int g_options_active;
-        int menu = g_options_active;
+        extern int sh3_options_open(void);
+        int menu = sh3_options_open();   // game_fixes.c fix_options_frame
         int ui = world == 0;   // SH3: title/pause detection to be found
         int stickmode = cur || menu || ui;   // sticks do not drive the character
         const Sh4PadSample *physical = sh3_pad_sample(&self->sample, g, g_frame);
@@ -330,13 +394,34 @@ M(dev, GetDeviceState) {
         }
         W32(p + 32, (uint32_t)pov);
         W32(p + 36, 0xffffffffu); W32(p + 40, 0xffffffffu); W32(p + 44, 0xffffffffu);
-        // Vita buttons in the PS2 layout (pad_mapping.h): cross confirm, circle back/run, triangle inventory, square
-        // flashlight, R ready weapon, L camera behind, start pause, select map. No side steps, no chords, no rear touch.
-        unsigned mapped = sh3_pad_buttons(raw_buttons);
-        // No input sends DI6/DI7 (the options' previous/next page): the second options page (display settings the
-        // port fixes) and remapping stay out of reach. Button Config open (boot_credits.c): only circle, to go back.
-        { extern int sh3_btncfg_open(void);
-          if (sh3_btncfg_open()) { mapped &= 1u << SH3_DI_CANCEL; W32(p + 32, 0xffffffffu); } }
+        // Buttons and touch in the chosen scheme (control_scheme.h); in the options menu L / R turn the page.
+        Sh3Touch touch;
+        read_touch(&touch);
+        unsigned mapped = sh3_scheme_buttons(raw_buttons, sh3_control_scheme(), &touch, menu);
+        {   // PS2 schemes: circle also backs out of menus (no collision this frame or the last two: not in the world)
+            extern unsigned g_world_frame;
+            int in_world = g_world_frame && g_frame + 1 - g_world_frame <= 3;
+            mapped |= sh3_scheme_menu_cancel(raw_buttons, sh3_control_scheme(), in_world && !menu);
+        }
+        {   // Controls screen up (boot_credits.c, in place of the game's Button Config): left / right (d-pad or stick)
+            // change the scheme, saved at once; circle goes back (the game's cancel, button 2); nothing else reaches it.
+            extern int sh3_btncfg_open(void);
+            static int dir_was;
+            if (sh3_btncfg_open()) {
+                int dir = (rt || lsx > 16000) ? 1 : (lf || lsx < -16000) ? -1 : 0;
+#ifndef __vita__
+                {   // PC: the arrow keys too (no pad needed to try the schemes)
+                    const Uint8 *k = SDL_GetKeyboardState(NULL);
+                    if (k && k[SDL_SCANCODE_RIGHT]) dir = 1;
+                    else if (k && k[SDL_SCANCODE_LEFT]) dir = -1;
+                }
+#endif
+                if (dir && !dir_was) control_scheme_set(sh3_scheme_step(sh3_control_scheme(), dir));
+                dir_was = dir;
+                mapped = ((raw_buttons >> SDL_CONTROLLER_BUTTON_B) & 1u) ? 1u << SH3_DIB_RUN : 0;
+                W32(p + 32, 0xffffffffu);
+            } else dir_was = 0;
+        }
         {   // puzzle cursor up (game_fixes.c): the stick / d-pad move the pointer and cross clicks; circle still backs out
             extern int sh3_vcursor_update(int sx, int sy, int cross);
             if (sh3_vcursor_update(lsx, lsy, (raw_buttons >> SDL_CONTROLLER_BUTTON_A) & 1u)) {

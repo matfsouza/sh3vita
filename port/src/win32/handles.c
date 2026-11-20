@@ -1,9 +1,12 @@
 // Handles Win32, attentes et chemins.
 #include "win32.h"
+#include "handle_ref.h"
 #include <ctype.h>
 
 #define MAX_H 1024
-static struct { int type; void *obj; } htab[MAX_H];
+// ref: calls running on the handle (handle_ref.h). A closed handle with a call still running keeps its slot (so its
+// number is not reused) until that call releases it; h_get / h_type no longer see it.
+static struct { int type; void *obj; HandleRef ref; } htab[MAX_H];
 static SDL_mutex *hlock;
 SDL_mutex *g_sync;
 SDL_cond *g_sync_cv;
@@ -23,6 +26,7 @@ uint32_t h_new(int type, void *obj) {
         if (htab[i].type == H_FREE) {
             htab[i].type = type;
             htab[i].obj = obj;
+            htab[i].ref = (HandleRef){0, 0};
             SDL_UnlockMutex(hlock);
             return 0x1000u + 4u * i;
         }
@@ -35,28 +39,63 @@ static int idx(uint32_t h) {
     return h >= 0x1000u && (h & 3) == 0 && i < MAX_H ? i : 0;
 }
 
-int h_type(uint32_t h) { return htab[idx(h)].type; }
+int h_type(uint32_t h) { int i = idx(h); return htab[i].ref.closed ? H_FREE : htab[i].type; }
 
 void *h_get(uint32_t h, int type) {
     int i = idx(h);
-    return i && htab[i].type == type ? htab[i].obj : NULL;
+    return i && htab[i].type == type && !htab[i].ref.closed ? htab[i].obj : NULL;
+}
+
+static void slot_free(int i) {   // under hlock
+    htab[i].type = H_FREE;
+    htab[i].obj = NULL;
+    htab[i].ref = (HandleRef){0, 0};
+}
+
+// Every call that uses a handle's object while another thread may close it: h_acquire ... h_release (handle_ref.h).
+void *h_acquire(uint32_t h, int type) {
+    int i = idx(h);
+    if (!i) return NULL;
+    lazy_init();
+    SDL_LockMutex(hlock);
+    void *obj = htab[i].type == type && hr_acquire(&htab[i].ref) ? htab[i].obj : NULL;
+    SDL_UnlockMutex(hlock);
+    return obj;
+}
+int h_release(uint32_t h) {
+    int i = idx(h), last = 0;
+    if (!i) return 0;
+    SDL_LockMutex(hlock);
+    if (htab[i].type != H_FREE && htab[i].ref.refs > 0 && (last = hr_release(&htab[i].ref))) slot_free(i);
+    SDL_UnlockMutex(hlock);
+    return last;
+}
+void *h_retire(uint32_t h, int type, int *now) {
+    int i = idx(h);
+    void *obj = NULL;
+    *now = 0;
+    if (!i) return NULL;
+    lazy_init();
+    SDL_LockMutex(hlock);
+    if (htab[i].type == type && !htab[i].ref.closed) {
+        obj = htab[i].obj;
+        if ((*now = hr_close(&htab[i].ref))) slot_free(i);
+    }
+    SDL_UnlockMutex(hlock);
+    return obj;
 }
 
 void h_close(uint32_t h) {
-    int i = idx(h);
-    if (!i) return;
-    SDL_LockMutex(hlock);
-    htab[i].type = H_FREE;
-    htab[i].obj = NULL;
-    SDL_UnlockMutex(hlock);
+    int i = idx(h), now;
+    if (i) h_retire(h, htab[i].type, &now);
 }
 
-int w32_signaled(uint32_t h) {
+int w32_signaled(uint32_t h) {   // a handle closed meanwhile reads as signalled (no NULL object behind it)
     switch (h_type(h)) {
-    case H_EVENT: return ((Event *)h_get(h, H_EVENT))->state;
-    case H_THREAD: return ((Thread *)h_get(h, H_THREAD))->done;
+    case H_EVENT: { Event *e = h_get(h, H_EVENT); return !e || e->state; }
+    case H_THREAD: { Thread *t = h_get(h, H_THREAD); return !t || t->done; }
     case H_MUTEX: return 1;
-    case H_SEM: return __atomic_load_n(&((Semaphore *)h_get(h, H_SEM))->count, __ATOMIC_SEQ_CST) > 0;
+    case H_SEM: { Semaphore *s = h_get(h, H_SEM); return !s || __atomic_load_n(&s->count, __ATOMIC_SEQ_CST) > 0; }
     default: return 1;
     }
 }

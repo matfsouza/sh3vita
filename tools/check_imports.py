@@ -20,10 +20,18 @@ def symbol(dll, fn):
 
 
 def _macro_prefixes(text):
-    """#define K(name) void imp_KERNEL32_##name(CPU *c) -> {'K': 'imp_KERNEL32_'}"""
+    """#define K(name) void imp_KERNEL32_##name(CPU *c) -> {'K': 'imp_KERNEL32_'}; a macro whose body (lines joined by
+    backslashes) uses one of those as M(name) gets the same prefix (sh3_mmio.c MMIO_HELD wraps W)."""
     out = {}
     for m in re.finditer(r"#define\s+([A-Z][A-Z0-9_]*)\(name\)\s+void\s+(imp_[A-Za-z0-9_]*?)##name\s*\(CPU", text):
         out[m.group(1)] = m.group(2)
+    for m in re.finditer(r"#define\s+([A-Z][A-Z0-9_]*)\(name\)((?:[^\n]*\\\n)*[^\n]*)", text):
+        if m.group(1) in out:
+            continue
+        for inner, prefix in list(out.items()):
+            if re.search(rf"\b{inner}\(name\)", m.group(2)):
+                out[m.group(1)] = prefix
+                break
     return out
 
 

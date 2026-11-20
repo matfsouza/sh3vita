@@ -137,6 +137,69 @@ static uint32_t guest_calloc_reclaim(uint32_t size) {
     }
     return mem;
 }
+// Texture guest copies (tex_policy.h): live textures, the game's locks on each level, and the periodic release of
+// copies that are on the GPU and that the game has stopped touching (tex_release_sweep, called at Present).
+#include "tex_policy.h"
+static Texture *s_live;
+static uint64_t s_released_bytes;
+static unsigned s_released_n;
+static void live_add(Texture *t) { t->live_next = s_live; if (s_live) s_live->live_prev = t; s_live = t; }
+static void live_remove(Texture *t) {
+    if (t->live_prev) t->live_prev->live_next = t->live_next; else if (s_live == t) s_live = t->live_next;
+    if (t->live_next) t->live_next->live_prev = t->live_prev;
+    t->live_prev = t->live_next = NULL;
+}
+static void level_locked(Surface *s, uint32_t rect) {
+    extern unsigned g_frame;
+    if (s->locks < 0xffff) s->locks++;
+    s->lock_frame = g_frame;
+    if (rect) s->rect_locked = 1;
+    if (s->released) {   // its contents are gone: the game gets zeros; keep the copy from now on
+        s->released = 0;
+        s->no_release = 1;
+        rt_log("[tex] level %ux%u locked again after its copy was released\n", s->w, s->h);
+    }
+}
+void tex_release_sweep(void) {
+    extern unsigned g_frame;
+    for (Texture *t = s_live; t; t = t->live_next) {
+        if (!t->gl || t->cube || t->movie || (t->usage & 1)) continue;
+        int in_flight = !prep_use_done(t->use);
+        uint32_t dirty = __atomic_load_n(&t->dirty, __ATOMIC_RELAXED);
+        // several levels: on the Vita a new upload of one level re-sends all of them, so all or none
+        int all = 1;
+        TexLevelInfo info[16];
+        uint32_t n = t->levels < 16 ? t->levels : 16;
+        for (uint32_t l = 0; l < n; l++) {
+            Surface *s = t->lv[l];
+            info[l] = (TexLevelInfo){
+                .has_copy = s->mem != 0, .locks = s->locks, .rect_locked = s->rect_locked,
+                .uploaded = !(dirty & (1u << l)), .in_flight = in_flight, .made_in_world = t->made_in_world,
+                .render_target = 0, .movie = t->movie, .no_release = s->no_release,
+                .frames_idle = g_frame - s->lock_frame, .pool = t->pool, .bytes = fmt_level_size(t->fmt, s->w, s->h)};
+            if (s->mem && !tex_release_ok(&info[l])) all = 0;
+            if (!s->mem && s->locks > 1) all = 0;
+        }
+        if (!all || t->levels > 16) continue;
+        for (uint32_t l = 0; l < n; l++) {
+            Surface *s = t->lv[l];
+            if (!s->mem) continue;
+            gheap_free(s->mem);
+            g_mem_tex -= info[l].bytes;
+            s_released_bytes += info[l].bytes;
+            s_released_n++;
+            s->mem = 0;
+            s->released = 1;
+        }
+    }
+    static unsigned logged_n, logged_frame;
+    if (s_released_n != logged_n && g_frame - logged_frame >= 900) {   // at most every 30 s
+        logged_n = s_released_n;
+        logged_frame = g_frame;
+        rt_log("[tex] guest copies released: %u levels, %llu MB in all\n", s_released_n, (unsigned long long)(s_released_bytes >> 20));
+    }
+}
+
 static uint32_t surf_mem(Surface *s) {
     if (s->pending) surf_flush_pending(s);
     if (!s->mem) {
@@ -209,6 +272,7 @@ M(surf, LockRect) {
     }
     if (self->tex) {
         Texture *t = self->tex;
+        level_locked(self, ARG(3));
         prep_wait_use(t->use);
         uint32_t lw = t->w >> self->level ? t->w >> self->level : 1;
         STDRET(4, lock_rect(surf_mem(self), t->fmt, lw, ARG(2), ARG(3)));
@@ -302,6 +366,15 @@ M(tex, LockRect) {
 #ifdef __vita__
     no_wait |= self->movie && self->fmt == FMT_A8R8G8B8 && self->stg_alloc;
 #endif
+    level_locked(self->lv[l], ARG(4));
+    if (ARG(4) && !no_wait) {   // a small rectangle in a texture on the GPU: the glyph cache (tex_policy.h)
+        uint32_t r = ARG(4), rw = R32(r + 8) - R32(r), rh = R32(r + 12) - R32(r + 4);
+        if (tex_rect_lock_nowait(self->w, self->h, self->levels, self->gl != 0, self->usage & 1, rw, rh)) {
+            static int logged;
+            if (!logged++) rt_log("[tex] rectangle locks without waiting: %ux%u, %ux%u cells\n", self->w, self->h, rw, rh);
+            no_wait = 1;
+        }
+    }
     if (!no_wait) prep_wait_use(self->use);
     STDRET(5, lock_rect(surf_mem(self->lv[l]), self->fmt, w ? w : 1, ARG(3), ARG(4)));
 }
@@ -355,6 +428,12 @@ Texture *tex_create(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uin
     if (usage & 1) t->dirty = 1; // RENDERTARGET: GL storage to create
     com_wrap(&t->com, K_TEXTURE, tex_vt, 19, "IDirect3DTexture8");
     g_tex_created++;
+    {   // SH3_TEXREL_ALL=1 (test): every texture counts as made in the world, so a single room shows the releases
+        extern int g_world_seen; static int all = -1;
+        if (all < 0) all = getenv("SH3_TEXREL_ALL") != NULL;
+        t->made_in_world = g_world_seen || all;
+    }
+    if (!t->cube) live_add(t);
     return t;
 }
 
@@ -835,6 +914,7 @@ void d3d_release(ComObj *o) {
         if (g_dev)
             for (int s = 0; s < MAX_STAGES; s++)
                 if (g_dev->tex[s] == t) return; // still bound (should not happen: SetTexture does AddRef)
+        live_remove(t);
         prep_free(K_TEXTURE, t);
         break;
     }

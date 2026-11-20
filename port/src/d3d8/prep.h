@@ -26,6 +26,7 @@ void prep_vsdel(uint32_t h);
 void prep_psdel(uint32_t h);
 void prep_use(uint32_t *use);                                    // marks the resource "used by the records issued so far"
 void prep_wait_use(uint32_t use);                                // before writing a resource's memory
+int prep_use_done(uint32_t use);                                 // the records that use it have all been replayed (no wait)
 void prep_wait_all(void);
 void prep_report(double frames);                                 // SH3_STATS
 void prep_gfree(uint32_t wrapper, uint32_t mem);                 // consumer: deferred guest free

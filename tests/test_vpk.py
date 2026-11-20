@@ -32,8 +32,8 @@ def test_vpk_has_eboot_and_sfo():
 
 def test_title_id_and_name():
     sfo = sfo_values(zipfile.ZipFile(VPK).read("sce_sys/param.sfo"))
-    assert sfo["TITLE_ID"] == "SILH00003"
-    assert sfo["TITLE"] == "Silent Hill 3"
+    assert sfo["TITLE_ID"] == "SH3EE0001"
+    assert sfo["TITLE"] == "Silent Hill 3 Enhanced Edition"
 
 
 def test_no_game_files_inside():

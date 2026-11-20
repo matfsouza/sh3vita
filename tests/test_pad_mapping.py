@@ -28,7 +28,7 @@ static void expect(const char *what, unsigned got, unsigned want) {
 int main(void) {
     expect("nothing", sh3_pad_buttons(0), 0);
     expect("cross = action/confirm", sh3_pad_buttons(B(A)), DI(SH3_DI_ACTION));
-    expect("circle = cancel + run", sh3_pad_buttons(B(B)), DI(SH3_DI_CANCEL) | DI(SH3_DI_RUN) | DI(SH3_DI_RUN2));
+    expect("circle = cancel/run, no use-supply or zoom", sh3_pad_buttons(B(B)), DI(SH3_DI_CANCEL));
     expect("no side steps", sh3_pad_buttons((1u << SDL_CONTROLLER_BUTTON_MAX) - 1) & (DI(6) | DI(7)), 0);
     expect("triangle = inventory", sh3_pad_buttons(B(Y)), DI(SH3_DI_INVENTORY));
     expect("square = flashlight", sh3_pad_buttons(B(X)), DI(SH3_DI_LIGHT));

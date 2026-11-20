@@ -180,6 +180,10 @@ static inline uint32_t cur_pos(void) { return whead ? whead : 1; }
 
 void prep_wait_all(void) { wait_pos(whead); }
 void prep_use(uint32_t *use) { *use = cur_pos(); }
+int prep_use_done(uint32_t use) {
+    if (!use || (uint32_t)(whead - use) >= rwords) return 1;
+    return (int32_t)(LD(&tail) - use) >= 0;
+}
 void prep_wait_use(uint32_t use) {
     if (!use || (uint32_t)(whead - use) >= rwords) return;   // never used, or older than the ring (so already replayed)
     if ((int32_t)(LD(&tail) - use) >= 0) return;

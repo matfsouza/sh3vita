@@ -323,3 +323,46 @@ int sh3_vcursor_update(int sx, int sy, int cross) {
     W32(G_MOUSE_UNTIL, 0xffffff00u);
     return 1;
 }
+
+// Options menu (options_menu.h): 0x5e68f0 runs every frame the options menu is up. The pad treats it as a menu
+// (dinput.c: L / R turn the page), Display Mode stays off, and turning the page never lands on Configuration.
+#include "options_menu.h"
+#define G_OPT_ROW      0xbcc178u   // byte: selected row
+#define G_OPT_ROW_NEXT 0xbcc179u   // byte: row chosen by the page / row functions, applied by the menu
+#define G_OPT_SHOWN    0xbcc182u   // bytes: row shown, by row number
+unsigned g_options_frame;          // g_frame + 1 of the last options menu frame, 0 = never
+void F_005e68f0_orig(CPU *c);
+void F_005e3560_orig(CPU *c);
+void F_005e35e0_orig(CPU *c);
+void fix_options_frame(CPU *c) {
+    uint8_t *const mb = g_mem;
+    extern unsigned g_frame;
+    g_options_frame = g_frame + 1;
+    // Whatever path selected it (pointer, a row kept from an earlier visit), a Configuration row is never drawn.
+    if (opt_hidden_page((int8_t)R8(G_OPT_ROW))) { W8(G_OPT_ROW, 1); W8(G_OPT_ROW_NEXT, 1); }
+    opt_block_rows(mb + G_OPT_SHOWN);
+    F_005e68f0_orig(c);
+    opt_block_rows(mb + G_OPT_SHOWN);
+}
+static void page_turn(CPU *c, void (*turn)(CPU *)) {
+    uint8_t *const mb = g_mem;
+    uint32_t esp = c->esp, ret = R32(esp);   // the guest function returns (pops its return address) each time
+    uint8_t row = R8(G_OPT_ROW);
+    turn(c);
+    if (opt_hidden_page((int8_t)R8(G_OPT_ROW_NEXT))) {   // Configuration: on to the next page
+        // The turn reads the selected row, so it runs once more from the Configuration row. The menu draws the page
+        // of the selected row later in this same frame (and only then applies the next row): put it back, or that
+        // frame shows Configuration.
+        W8(G_OPT_ROW, R8(G_OPT_ROW_NEXT));
+        uint32_t after = c->esp;
+        c->esp = esp;
+        W32(esp, ret);
+        turn(c);
+        c->esp = after;
+        W8(G_OPT_ROW, row);
+    }
+    if (opt_blocked_row((int8_t)R8(G_OPT_ROW_NEXT))) W8(G_OPT_ROW_NEXT, R8(G_OPT_ROW_NEXT) + 1);
+}
+void fix_options_next_page(CPU *c) { page_turn(c, F_005e3560_orig); }
+void fix_options_prev_page(CPU *c) { page_turn(c, F_005e35e0_orig); }
+int sh3_options_open(void) { extern unsigned g_frame; return g_options_frame && g_frame + 1 - g_options_frame <= 2; }

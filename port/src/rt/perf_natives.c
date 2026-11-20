@@ -426,7 +426,10 @@ static uint32_t seg_quad(const float *p, const float *q, const float *const v[4]
 void nat_seg_quad(CPU *c) {
     uint8_t *const mb = g_mem;
     NPC(NP_SEGQUAD);
-    { extern int g_world_seen; g_world_seen = 1; }   // collision runs: the player is in the world (no "v1" label)
+    {   // collision runs: the player is in the world (no "v1" label; dinput.c: circle cancels only outside it)
+        extern int g_world_seen; extern unsigned g_world_frame, g_frame;
+        g_world_seen = 1; g_world_frame = g_frame + 1;
+    }
     if (!nat_on()) { F_004f3300_orig(c); return; }
     uint32_t sp = c->esp, out = R32(sp + 4);
     float p[3], q[3], vv[4][3], hit[3];

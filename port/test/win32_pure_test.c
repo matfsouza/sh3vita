@@ -113,10 +113,13 @@ static void test_registry_defaults(void) {
         CHECK(n == sizeof "C:\\SH3\\" && !strcmp(out, "C:\\SH3\\"), "%s -> n=%u \"%s\"", names[i], n, out);
     }
     CHECK(reg_default_value("Install Language", out, sizeof out) == 0, "unknown value must be absent");
-    // Only the SH3 key exists: a PC without Silent Hill 2 has no SH2 key.
+    // The SH3 key, and the Silent Hill 2 key that sh3.exe 0x5e96f0 probes for the SH2 references; nothing else
+    //.
     CHECK(reg_key_exists("SOFTWARE\\KONAMI\\SILENT HILL 3"), "SH3 key");
     CHECK(reg_key_exists("Software\\Konami\\Silent Hill 3\\"), "SH3 key, other case and trailing backslash");
-    CHECK(!reg_key_exists("SOFTWARE\\Konami\\Silent Hill2"), "SH2 key must not exist");
+    CHECK(reg_key_exists("SOFTWARE\\Konami\\Silent Hill2"), "SH2 key (SH2 references on)");
+    CHECK(!reg_key_exists("SOFTWARE\\Konami\\Silent Hill2X"), "prefix of the SH2 key");
+    CHECK(!reg_key_exists("SOFTWARE\\Microsoft\\Direct3D"), "Direct3D key must not exist");
     CHECK(!reg_key_exists("SOFTWARE\\KONAMI\\SILENT HILL 3X"), "prefix of another key");
     CHECK(!reg_key_exists(""), "empty path");
 }

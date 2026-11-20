@@ -67,6 +67,12 @@ typedef struct Surface {
     // Vita: did the last pass on this target use depth/stencil? Its next pass then starts with the depth surface
     //.
     uint8_t depth_hint, depth_seen;
+    // Texture levels (tex_policy.h): how the game locks this level, to release its guest copy once it is on the GPU.
+    uint16_t locks;            // LockRect calls
+    uint8_t rect_locked;       // at least one lock of a rectangle (incremental writes: keep the copy)
+    uint8_t no_release;        // locked again after a release: keep the copy from now on
+    uint8_t released;          // guest copy released (relocking it starts from zeros)
+    uint32_t lock_frame;       // g_frame of the last lock
 } Surface;
 
 struct Texture {
@@ -82,6 +88,8 @@ struct Texture {
     int stg_alloc;         // movie (Vita): GL 565 storage exists (565 frames come from movie_565_take)
     uint32_t use;          // ring position (prep.c) of the last record that reads/writes this texture
     int cube;              // IDirect3DCubeTexture8 (SH3): lv holds 6 mip chains, see cube_faces.h
+    int made_in_world;     // created once the player reached the world (tex_policy.h: boot textures keep their copies)
+    struct Texture *live_prev, *live_next;   // list of live textures (resource.c tex_release_sweep)
 };
 static inline uint32_t tex_surface_count(const Texture *t) { return t->cube ? 6u * t->levels : t->levels; }
 static inline GLenum tex_target(const Texture *t) { return t->cube ? GL_TEXTURE_CUBE_MAP : GL_TEXTURE_2D; }

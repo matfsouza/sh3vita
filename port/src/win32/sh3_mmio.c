@@ -27,7 +27,23 @@
 #define MI_HMMIO 68
 
 typedef struct { MmioStream s; uint32_t flags, buf, cap, guest_mem; } Mmio;   // guest_mem: guest address of a memory file
-static Mmio *mmio_of(uint32_t h) { return h_get(h, H_MMIO); }
+static void mmio_destroy(Mmio *m) {
+    if (m->s.f) fclose(m->s.f);
+    if (m->buf) gheap_free(m->buf);
+    free(m);
+}
+// Every mmio call holds its handle (h_acquire ... h_release, handle_ref.h): the game's sound threads read wave files
+// while another thread may mmioClose them; the last call to return frees the file. The body gets m (NULL: bad handle).
+#define MMIO_HELD(name) \
+    static void name##_on(CPU *c, Mmio *m); \
+    W(name) { \
+        HOSTFN; \
+        uint32_t h = ARG(1); \
+        Mmio *m = h_acquire(h, H_MMIO); \
+        name##_on(c, m); \
+        if (m && h_release(h)) mmio_destroy(m); \
+    } \
+    static void name##_on(CPU *c, Mmio *m)
 
 W(mmioOpenA) {   // (name, MMIOINFO * or NULL, flags)
     HOSTFN;
@@ -60,35 +76,28 @@ W(mmioOpenA) {   // (name, MMIOINFO * or NULL, flags)
 }
 W(mmioClose) {
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
-    if (!m) STDRET(2, 0);
-    if (m->s.f) fclose(m->s.f);
-    if (m->buf) gheap_free(m->buf);
-    free(m);
-    h_close(ARG(1));
+    int now;
+    Mmio *m = h_retire(ARG(1), H_MMIO, &now);
+    if (m && now) mmio_destroy(m);   // otherwise by the mmio call still running (MMIO_HELD)
     STDRET(2, 0);
 }
-W(mmioRead) {
+MMIO_HELD(mmioRead) {
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m || (int32_t)ARG(3) < 0) STDRET(3, 0xffffffffu);
     STDRET(3, (uint32_t)ms_read(&m->s, mb + ARG(2), ARG(3)));
 }
-W(mmioWrite) {
+MMIO_HELD(mmioWrite) {
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m || (int32_t)ARG(3) < 0) STDRET(3, 0xffffffffu);
     STDRET(3, (uint32_t)ms_write(&m->s, mb + ARG(2), ARG(3)));
 }
-W(mmioSeek) {   // (h, offset, origin SEEK_SET/CUR/END) -> new position or -1
+MMIO_HELD(mmioSeek) {   // (h, offset, origin SEEK_SET/CUR/END) -> new position or -1
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m || ms_seek(&m->s, (long)(int32_t)ARG(2), ARG(3) == 1 ? SEEK_CUR : ARG(3) == 2 ? SEEK_END : SEEK_SET)) STDRET(3, 0xffffffffu);
     STDRET(3, (uint32_t)ms_tell(&m->s));
 }
-W(mmioDescend) {   // (h, MMCKINFO *, parent MMCKINFO * or NULL, flags)
+MMIO_HELD(mmioDescend) {   // (h, MMCKINFO *, parent MMCKINFO * or NULL, flags)
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m) STDRET(4, MMIOERR_CANNOTSEEK);
     uint32_t ck[5], parent[5];
     memcpy(ck, mb + ARG(2), sizeof ck);
@@ -97,9 +106,8 @@ W(mmioDescend) {   // (h, MMCKINFO *, parent MMCKINFO * or NULL, flags)
     if (!r) memcpy(mb + ARG(2), ck, sizeof ck);
     STDRET(4, r);
 }
-W(mmioAscend) {   // (h, MMCKINFO *, flags)
+MMIO_HELD(mmioAscend) {   // (h, MMCKINFO *, flags)
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m) STDRET(3, MMIOERR_CANNOTSEEK);
     uint32_t ck[5];
     memcpy(ck, mb + ARG(2), sizeof ck);
@@ -107,9 +115,8 @@ W(mmioAscend) {   // (h, MMCKINFO *, flags)
     memcpy(mb + ARG(2), ck, sizeof ck);
     STDRET(3, r);
 }
-W(mmioCreateChunk) {   // (h, MMCKINFO *, flags MMIO_CREATERIFF 0x20 / MMIO_CREATELIST 0x40)
+MMIO_HELD(mmioCreateChunk) {   // (h, MMCKINFO *, flags MMIO_CREATERIFF 0x20 / MMIO_CREATELIST 0x40)
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m) STDRET(3, MMIOERR_CANNOTSEEK);
     uint32_t ck[5];
     memcpy(ck, mb + ARG(2), sizeof ck);
@@ -123,9 +130,8 @@ W(mmioCreateChunk) {   // (h, MMCKINFO *, flags MMIO_CREATERIFF 0x20 / MMIO_CREA
     memcpy(mb + ARG(2), ck, sizeof ck);
     STDRET(3, 0);
 }
-W(mmioGetInfo) {   // (h, MMIOINFO *, flags)
+MMIO_HELD(mmioGetInfo) {   // (h, MMIOINFO *, flags)
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     if (!m) STDRET(3, MMIOERR_CANNOTSEEK);
     uint32_t info = ARG(2);
     memset(mb + info, 0, 72);
@@ -147,9 +153,8 @@ W(mmioGetInfo) {   // (h, MMIOINFO *, flags)
     W32(info + MI_DISK, (uint32_t)ms_tell(&m->s));
     STDRET(3, 0);
 }
-W(mmioAdvance) {   // (h, MMIOINFO *, MMIO_READ 0 / MMIO_WRITE 1)
+MMIO_HELD(mmioAdvance) {   // (h, MMIOINFO *, MMIO_READ 0 / MMIO_WRITE 1)
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     uint32_t info = ARG(2);
     if (!m || !info) STDRET(3, MMIOERR_CANNOTSEEK);
     if (m->guest_mem) {   // nothing beyond the memory block: keep the buffer as is
@@ -169,9 +174,8 @@ W(mmioAdvance) {   // (h, MMIOINFO *, MMIO_READ 0 / MMIO_WRITE 1)
     W32(info + MI_DISK, (uint32_t)ms_tell(&m->s));
     STDRET(3, 0);
 }
-W(mmioSetInfo) {   // (h, MMIOINFO *, flags): sync the stream with what the game consumed
+MMIO_HELD(mmioSetInfo) {   // (h, MMIOINFO *, flags): sync the stream with what the game consumed
     HOSTFN;
-    Mmio *m = mmio_of(ARG(1));
     uint32_t info = ARG(2);
     if (!m || !info) STDRET(3, MMIOERR_CANNOTSEEK);
     uint32_t next = R32(info + MI_NEXT), end = R32(info + MI_ENDREAD), buf = R32(info + MI_BUF);

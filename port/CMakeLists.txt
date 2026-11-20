@@ -7,9 +7,9 @@ endif()
 project(sh3vita C)
 include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
-set(VITA_APP_NAME "Silent Hill 3 Enhanced Edition")
-set(VITA_TITLEID  "SH3EE0001")
-set(VITA_VERSION "01.10" CACHE STRING "VPK application version (keep the title ID unchanged)")
+set(VITA_APP_NAME "Silent Hill 3 Enhanced Edition")   # bubble title
+set(VITA_TITLEID "SH3EE0001" CACHE STRING "VPK title ID")
+set(VITA_VERSION "01.20" CACHE STRING "VPK application version (keep the title ID unchanged)")
 
 # C code generated from the player's own exe (port/gen/, never versioned): run recomp/x86rec.py first.
 file(GLOB GEN_SRC ${CMAKE_SOURCE_DIR}/gen/*.c)
@@ -104,6 +104,24 @@ if(EXISTS "${SH3_SHADER_CACHE_DIR}/manifest.json")
 elseif(SH3_REQUIRE_SHADER_CACHE)
   message(FATAL_ERROR "A release package requires SH3_SHADER_CACHE_DIR with a validated cache bundle")
 endif()
+# Pictures of ui/ (TGA): stored gzip-compressed in the VPK (tools/gz_assets.py, read with gzread), so installing
+# writes ~3x fewer bytes. sh3_ui(source) queues a picture under its own name in ui/.
+set(SH3_UI_SRC)
+macro(sh3_ui SRC)
+  list(APPEND SH3_UI_SRC ${CMAKE_SOURCE_DIR}/${SRC})
+endmacro()
+sh3_ui(assets/controls/controls.tga)
+# Controls screen: one picture per game language and control layout (tools/make_controls_help.ps1)
+foreach(SH3_LANG RANGE 7)
+  foreach(SH3_LAYOUT RANGE 2)
+    set(SH3_CTL controls_${SH3_LANG}_${SH3_LAYOUT}.tga)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/livearea_user/${SH3_CTL})   # the version over the wallpaper (official artwork)
+      sh3_ui(livearea_user/${SH3_CTL})
+    else()
+      sh3_ui(assets/credits/${SH3_CTL})
+    endif()
+  endforeach()
+endforeach()
 # LiveArea / boot artwork: port/livearea_user (made by tools/make_livearea.py and make_credits.ps1 from the user's
 # pictures, not versioned) wins over the versioned placeholders file by file.
 set(SH3_ART_FILES)
@@ -114,16 +132,34 @@ foreach(SH3_ART icon0.png bg.png startup.png pic0.png)
     set(SH3_ART_${SH3_ART} livearea/${SH3_ART})
   endif()
 endforeach()
-foreach(SH3_UI credits.tga version.tga)
+foreach(SH3_UI version.tga)   # (credits.tga: the in-game credits screen was removed)
   if(EXISTS ${CMAKE_SOURCE_DIR}/livearea_user/${SH3_UI})
-    list(APPEND SH3_ART_FILES FILE livearea_user/${SH3_UI} ui/${SH3_UI})
+    sh3_ui(livearea_user/${SH3_UI})
   else()
-    list(APPEND SH3_ART_FILES FILE assets/credits/${SH3_UI} ui/${SH3_UI})
+    sh3_ui(assets/credits/${SH3_UI})
   endif()
 endforeach()
-if(EXISTS ${CMAKE_SOURCE_DIR}/livearea_user/loading.tga)
-  list(APPEND SH3_ART_FILES FILE livearea_user/loading.tga ui/loading.tga)
+# one-time "Preparing graphics" screen (tools/make_prep_screen.ps1); without it the port draws a plain bar
+if(EXISTS ${CMAKE_SOURCE_DIR}/livearea_user/prep.tga)
+  sh3_ui(livearea_user/prep.tga)
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/assets/credits/prep.tga)
+  sh3_ui(assets/credits/prep.tga)
 endif()
+if(EXISTS ${CMAKE_SOURCE_DIR}/livearea_user/loading.tga)
+  sh3_ui(livearea_user/loading.tga)
+endif()
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(SH3_GZ_DIR ${CMAKE_BINARY_DIR}/uigz)
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/../tools/gz_assets.py" "${SH3_GZ_DIR}" ${SH3_UI_SRC}
+  RESULT_VARIABLE SH3_GZ_RESULT)
+if(NOT SH3_GZ_RESULT EQUAL 0)
+  message(FATAL_ERROR "tools/gz_assets.py failed")
+endif()
+foreach(SH3_SRC IN LISTS SH3_UI_SRC)
+  get_filename_component(SH3_NAME ${SH3_SRC} NAME)
+  list(APPEND SH3_ART_FILES FILE ${SH3_GZ_DIR}/${SH3_NAME} ui/${SH3_NAME})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SH3_SRC})
+endforeach()
 vita_create_vpk(sh3.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
@@ -132,8 +168,6 @@ vita_create_vpk(sh3.vpk ${VITA_TITLEID} eboot.bin
   FILE ${SH3_ART_bg.png} sce_sys/livearea/contents/bg.png
   FILE ${SH3_ART_startup.png} sce_sys/livearea/contents/startup.png
   FILE livearea/template.xml sce_sys/livearea/contents/template.xml
-  FILE assets/controls/controls.tga ui/controls.tga
-  FILE assets/credits/controls_help.tga ui/controls_help.tga
   ${SH3_ART_FILES}
   FILE assets/controls/README.md ui/CONTROLLER-ART-CREDITS.md
   FILE assets/controls/Kenney-License.txt ui/Kenney-License.txt

@@ -4,6 +4,9 @@
 #include "prep.h"
 #include <math.h>
 #include <stdlib.h>
+#ifdef __vita__
+#include <zlib.h>
+#endif
 
 typedef struct { float x,y,z,rhw; uint32_t color; float u,v; } UiVertex;
 static Texture *atlas;
@@ -31,15 +34,28 @@ static int load(void) {
     const char *path="../../port/assets/controls/controls.tga";
     const char *override=getenv("SH3_UI_ASSETS"); if (override) path=override;
 #endif
+#ifdef __vita__   // stored gzip-compressed in the VPK (tools/gz_assets.py); gzread also reads a plain file
+    gzFile f=gzopen(path,"rb"); unsigned char h[18];
+#define ATL_READ(b,n) (gzread(f,(b),(unsigned)(n))==(int)(n))
+#define ATL_END() (gzgetc(f)==-1)
+#define ATL_CLOSE() gzclose(f)
+#else
     FILE *f=fopen(path,"rb"); unsigned char h[18];
+#define ATL_READ(b,n) (fread((b),1,(n),f)==(size_t)(n))
+#define ATL_END() (fgetc(f)==EOF && !ferror(f))
+#define ATL_CLOSE() fclose(f)
+#endif
     if (!f) { rt_log("[controls] cannot open %s\n",path); return 0; }
-    int valid=fread(h,1,18,f)==18 && !h[0] && !h[1] && h[2]==2 &&
+    int valid=ATL_READ(h,18) && !h[0] && !h[1] && h[2]==2 &&
         h[12]==0 && h[13]==4 && h[14]==0 && h[15]==2 && h[16]==32 && h[17]==0x28;
-    if (!valid) { fclose(f); rt_log("[controls] invalid atlas header\n"); return 0; }
+    if (!valid) { ATL_CLOSE(); rt_log("[controls] invalid atlas header\n"); return 0; }
     uint32_t mem=gheap_alloc(1024*512*4), vb=gheap_alloc(sizeof glyph_batch);
-    if (!mem || !vb) { if(mem)gheap_free(mem);if(vb)gheap_free(vb);fclose(f);return 0; }
-    int ok=fread(g_mem+mem,1,1024*512*4,f)==1024*512*4 && fgetc(f)==EOF && !ferror(f);
-    fclose(f);
+    if (!mem || !vb) { if(mem)gheap_free(mem);if(vb)gheap_free(vb);ATL_CLOSE();return 0; }
+    int ok=ATL_READ(g_mem+mem,1024*512*4) && ATL_END();
+    ATL_CLOSE();
+#undef ATL_READ
+#undef ATL_END
+#undef ATL_CLOSE
     if (!ok) { gheap_free(mem);gheap_free(vb);rt_log("[controls] incomplete atlas\n");return 0; }
     // This texture is private to the host UI: no guest COM wrappers needed.
     // Allocate all host ownership nodes with checks before publishing it.

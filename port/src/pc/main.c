@@ -105,7 +105,10 @@ int main(int argc, char **argv) {
     }
     int ww = 960, wh = 544;
     if (getenv("SH3_WIN")) sscanf(getenv("SH3_WIN"), "%dx%d", &ww, &wh);   // video capture window
-    g_win = SDL_CreateWindow("Silent Hill 3 (sh3vita)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
+    // SH3_DISPLAY=n: open the window centred on display n (0 = primary), e.g. to watch test runs on another monitor
+    int disp = getenv("SH3_DISPLAY") ? atoi(getenv("SH3_DISPLAY")) : 0;
+    if (disp < 0 || disp >= SDL_GetNumVideoDisplays()) disp = 0;
+    g_win = SDL_CreateWindow("Silent Hill 3 (sh3vita)", SDL_WINDOWPOS_CENTERED_DISPLAY(disp), SDL_WINDOWPOS_CENTERED_DISPLAY(disp), ww, wh,
                              SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN | (getenv("SH3_WIN") ? SDL_WINDOW_BORDERLESS : SDL_WINDOW_RESIZABLE));
     /* Optional PC-only diagnostic: reproduce the guest-memory ceiling of a Vita.*/
     unsigned guest_mb = 512;

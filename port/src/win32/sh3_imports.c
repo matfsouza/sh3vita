@@ -155,27 +155,35 @@ K(FindFirstFileA) {
 }
 K(FindNextFileA) {
     HOSTFN;
-    Find *f = h_get(ARG(1), H_FIND);
-    if (f && find_next(f, mb, ARG(2))) STDRET(2, 1);
+    uint32_t h = ARG(1);
+    Find *f = h_acquire(h, H_FIND);   // held: FindClose from another thread frees it only after this call (handle_ref.h)
+    int ok = f && find_next(f, mb, ARG(2));
+    if (f && h_release(h)) { closedir(f->d); free(f); }
+    if (ok) STDRET(2, 1);
     w32_set_last_error(c, 18);   // ERROR_NO_MORE_FILES
     STDRET(2, 0);
 }
 K(FindClose) {
     HOSTFN;
-    Find *f = h_get(ARG(1), H_FIND);
+    int now;
+    Find *f = h_retire(ARG(1), H_FIND, &now);
     if (!f) STDRET(1, 0);
-    closedir(f->d);
-    free(f);
-    h_close(ARG(1));
+    if (now) { closedir(f->d); free(f); }   // otherwise by the FindNextFileA still running
     STDRET(1, 1);
 }
 
 // File mapping: a read-only copy of the file in guest memory (the game maps data files, it does not write through views).
-FILE *w32_file_stream(uint32_t h, const char **path);
+// The file is held (w32_file_stream ... w32_file_stream_end) and the mapping too (h_acquire ... h_release) while a view
+// is read, so neither can be closed under it by another thread (handle_ref.h).
+FILE *w32_file_stream(uint32_t h, const char **path, void **hold);
+void w32_file_stream_end(void *hold);
 typedef struct { uint32_t file; } Mapping;
 K(CreateFileMappingA) {   // (file, attrs, protect, size high, size low, name)
     HOSTFN;
-    if (!w32_file_stream(ARG(1), NULL)) { w32_set_last_error(c, 6); STDRET(6, 0); }
+    void *hold;
+    FILE *ok = w32_file_stream(ARG(1), NULL, &hold);
+    w32_file_stream_end(hold);
+    if (!ok) { w32_set_last_error(c, 6); STDRET(6, 0); }
     Mapping *m = calloc(1, sizeof *m);
     if (!m) { w32_set_last_error(c, 8); STDRET(6, 0); }
     m->file = ARG(1);
@@ -183,20 +191,29 @@ K(CreateFileMappingA) {   // (file, attrs, protect, size high, size low, name)
 }
 K(MapViewOfFile) {   // (mapping, access, offset high, offset low, bytes)
     HOSTFN;
-    Mapping *m = h_get(ARG(1), H_MAPPING);
+    uint32_t hm = ARG(1);
+    Mapping *m = h_acquire(hm, H_MAPPING);
     const char *path = NULL;
-    FILE *f = m ? w32_file_stream(m->file, &path) : NULL;
-    if (!f) { w32_set_last_error(c, 6); STDRET(5, 0); }
-    long keep = ftell(f);
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    uint32_t off = ARG(4), n = ARG(5) ? ARG(5) : (uint32_t)(size - (long)off);
-    uint32_t view = gheap_alloc(n ? n : 1);
-    if (!view) { fseek(f, keep, SEEK_SET); w32_set_last_error(c, 8); STDRET(5, 0); }
-    fseek(f, (long)off, SEEK_SET);
-    size_t got = fread(mb + view, 1, n, f);
-    fseek(f, keep, SEEK_SET);
-    rt_log("MapViewOfFile(\"%s\", +%u, %u) -> %08x (%u read)\n", path, off, n, view, (unsigned)got);
+    void *hold = NULL;
+    FILE *f = m ? w32_file_stream(m->file, &path, &hold) : NULL;
+    uint32_t view = 0, off = ARG(4), n = 0, error = 6;
+    size_t got = 0;
+    if (f) {
+        long keep = ftell(f);
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        n = ARG(5) ? ARG(5) : (uint32_t)(size - (long)off);
+        view = gheap_alloc(n ? n : 1);
+        if (view) {
+            fseek(f, (long)off, SEEK_SET);
+            got = fread(mb + view, 1, n, f);
+            rt_log("MapViewOfFile(\"%s\", +%u, %u) -> %08x (%u read)\n", path, off, n, view, (unsigned)got);
+        } else error = 8;
+        fseek(f, keep, SEEK_SET);
+    }
+    w32_file_stream_end(hold);
+    if (m && h_release(hm)) free(m);   // the mapping was closed while this view was read
+    if (!view) { w32_set_last_error(c, error); STDRET(5, 0); }
     STDRET(5, view);
 }
 K(UnmapViewOfFile) { HOSTFN; gheap_free(ARG(1)); STDRET(1, 1); }

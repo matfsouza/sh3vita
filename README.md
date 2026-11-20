@@ -7,7 +7,7 @@
 
 # Silent Hill 3 Enhanced Edition for PS Vita
 
-**Version 1.1** — an unofficial fan port of the Windows PC version of Silent Hill 3 to the PS Vita.
+**Version 1.2** — an unofficial fan port of the Windows PC version of Silent Hill 3 to the PS Vita.
 You play it with **your own copy** of the PC game: no game files are included here or in the VPK.
 
 **[Download the latest release](../../releases/latest)**: the VPK for the Vita and the data preparer.
@@ -21,7 +21,8 @@ You play it with **your own copy** of the PC game: no game files are included he
 - Targets a locked **30 FPS**, the PS2 frame rate.
 - Native Vita resolution (960×544), **16:9**, with the 3D scene rendered close to the PS2's 640×448.
 - The PS2-era effects kept: flashlight shadows, fog, noise filter, particles.
-- **Controls adapted to the Vita** in the PS2 layout (see below), with a Controls screen in the options.
+- **Three control layouts** on a Controls screen in the options: the Vita layout or the PS2 type B layout, with L1 /
+  R1 on the rear touch pad or on the screen (see [Controls](#controls)).
 - PC-version fixes rebuilt for the Vita: no cutscene bars, 2D menus kept in 4:3, full-screen pause background,
   no black box behind the pause menu.
 - Movies played by the port itself, scaled for the Vita.
@@ -36,19 +37,19 @@ It is not a plain copy of the PC release: the port puts back what the PS2 versio
 (sound pitch, the PS2 audio, the 4:3 framing of 2D screens, the save point seal at full colour), and adds what
 playing on a Vita needs (controls, a puzzle cursor, the screen layout, safe saves).
 
-## What's new in 1.1
+## What's new in 1.2
 
-- **Puzzles:** the cursor now appears; move it with the left stick or the D-pad and click with ✕. The bookstore
-  puzzle can be finished.
-- **D-pad** works as the left stick everywhere.
-- **Map:** Heather's position arrow is shown again, at a size closer to the PS2; map and inventory stay in 4:3 with
-  black side bands, and map marks no longer spill into the bands.
-- **Save points:** the red seal is drawn at full colour again, so you can find where to save. The same fix brings
-  back other 3D sprite effects that were missing.
-- **Saves and settings** are written to a temporary file first, so a crash during a save keeps your previous save.
-- **Movies:** less work per frame when playing the FMVs.
-- The game is now called **Silent Hill 3 Enhanced Edition** on the Vita. It installs as a new bubble: your saves
-  in `ux0:data/sh3/` stay, and you can delete the old Silent Hill 3 bubble.
+- **No more shader freezes:** the game used to stop for up to 1.7 seconds the first time it drew something new
+  (shooting, some cutscenes, new rooms). The VPK now ships the shaders already compiled, and anything missing is
+  compiled in the background while the game keeps running.
+- **Controls screen with three layouts** (Options > Button Config): Vita, PS2 rear and PS2 front. The PS2 layouts
+  follow the PS2 type B controller: □ runs, ○ flashlight and back, △ map, SELECT items, L / R as L2 / R2, and L1 / R1
+  on the left / right half of the rear touch pad or of the screen. Touch both halves for the quick 180° turn.
+- **Options pages:** L and R turn the page, so **Extra Options** (blood colour, noise effect, low health indicator)
+  can be reached. Running no longer zooms the camera.
+- **Crash fixed** when opening Options from the inventory.
+- **Silent Hill 2 references:** the four easter eggs of the original game play again.
+- New loading and preparation screens and LiveArea artwork.
 
 ## What you need
 
@@ -114,20 +115,24 @@ Optional arguments of `prepare_data.py`:
 
 ## Controls
 
-| Vita | Action |
-|---|---|
-| Left stick | Move |
-| ✕ | Action / attack / confirm |
-| ○ | Back · hold to run |
-| △ | Inventory |
-| □ | Flashlight |
-| R | Ready weapon |
-| L | Camera behind |
-| D-pad | Menus and item selection |
-| START | Pause menu |
-| SELECT | Map |
+Pick a layout on the Controls screen (Options > Button Config, ◀ / ▶ to change). Your choice is saved at once.
 
-The game's own button remapping is replaced by a Controls screen, so the Vita layout cannot be broken by accident.
+| Vita | Vita layout | PS2 layouts (type B) |
+|---|---|---|
+| Left stick / D-pad | Move, menus | Move, menus |
+| ✕ | Action / attack / confirm | Action / attack / confirm |
+| ○ | Back · hold to run | Flashlight · back in menus |
+| □ | Flashlight | Run / guard |
+| △ | Inventory | Map |
+| SELECT | Map | Inventory |
+| R | Ready weapon | Ready weapon (R2) |
+| L | Camera behind | Camera behind (L2) |
+| Rear touch, left / right half | — | L1 / R1 side steps (PS2 rear) |
+| Screen, left / right half | — | L1 / R1 side steps (PS2 front) |
+| START | Pause menu | Pause menu |
+
+In the PS2 layouts, touching both halves at once does the quick 180° turn. In the options menu, L and R turn the
+page in every layout.
 
 ## How it works
 

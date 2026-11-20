@@ -3,7 +3,7 @@
     icon.* square portrait -> port/livearea_user/icon0.png 128x128
     header.* ultra-wide header -> port/livearea_user/bg.png 840x500, Heather moved to the right
     gate.* "Silent Hill 3" banner -> port/livearea_user/startup.png 280x158 (the LiveArea start button)
-    loading.* Heather with the light -> port/livearea_user/pic0.png 960x544 and loading.tga (boot screen)
+    loading.* Heather with the light -> port/livearea_user/pic0.png 960x544 (the boot screen loading.tga: make_prep_screen.ps1 -Loading)
     logo.* Enhanced Edition logo -> used by tools/make_credits.ps1 at the top of the credits
 
 LiveArea PNGs are 8-bit palette images (the Vita refuses full-colour PNGs in a VPK, install error 0x8010113D).
@@ -119,7 +119,7 @@ def main():
     # loading picture: zoomed to fill the screen (no black bars), the window centred on the character (62% across)
     fit = "scale=-2:544:flags=lanczos,crop=960:544:'min(max(iw*0.62-480,0),iw-960)':0"
     pal8_png(find("loading"), fit, LIVE / "pic0.png")
-    tga(CRED / "loading.tga", 1024, 1024, rgba(find("loading"), fit + ",pad=1024:1024:0:0:black", 1024, 1024))
+    # the boot screen (ui/loading.tga) is made by tools/make_prep_screen.ps1 -Loading: artwork, logo and credits
 
     # previews: LiveArea (background on the right, start button on the left) and the loading screen
     run(["-f", "lavfi", "-i", "color=c=0x101010:s=960x544", "-i", str(LIVE / "bg.png"), "-i", str(LIVE / "startup.png"),
@@ -127,8 +127,8 @@ def main():
          "[0][1]overlay=120:44[a];[a][2]overlay=150:300[b];[b][3]overlay=10:60", "-frames:v", "1",
          str(PREVIEW / "livearea.png")])
     shutil.copy(LIVE / "pic0.png", PREVIEW / "loading.png")
-    print("written:", *(p.name for p in (LIVE / "icon0.png", LIVE / "bg.png", LIVE / "startup.png", LIVE / "pic0.png",
-                                          CRED / "loading.tga")), "and previews in", PREVIEW)
+    print("written:", *(p.name for p in (LIVE / "icon0.png", LIVE / "bg.png", LIVE / "startup.png", LIVE / "pic0.png")),
+          "and previews in", PREVIEW)
 
 
 if __name__ == "__main__":

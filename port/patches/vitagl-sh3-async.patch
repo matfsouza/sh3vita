@@ -1,0 +1,151 @@
+diff --git a/source/custom_shaders.c b/source/custom_shaders.c
+index e5b3d82..d28fd5e 100644
+--- a/source/custom_shaders.c
++++ b/source/custom_shaders.c
+@@ -666,6 +666,77 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
+ #endif
+ }
+ 
++// sh3vita: GLSL pair -> serialized vertex and fragment programs (the format of vglGetShaderBinary, loaded back with
++// glShaderBinary), without any sceGxm call or GL state, so a background thread can run it while the GL thread draws.
++// The caller must make sure no other thread translates or compiles shaders at the same time.
++extern GLboolean glsl_offline_pair;
++static int sh3_offline_compile(shader *s) {
++	s->prog = shark_compile_shader_extended((const char *)s->source, &s->size, s->type == GL_FRAGMENT_SHADER ? SHARK_FRAGMENT_SHADER : SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
++	if (!s->prog) {
++		shark_clear_output();
++		return 0;
++	}
++	SceGxmProgram *res = (SceGxmProgram *)vglMalloc(s->size);
++	vgl_fast_memcpy((void *)res, (void *)s->prog, s->size);
++	s->prog = res;
++	SceShaccCgCompileOutput *cout = (SceShaccCgCompileOutput *)shark_get_internal_compile_output();
++	SceShaccCgParameter param = sceShaccCgGetFirstParameter(cout);
++	while (param) {   // matrix uniforms: serialize_shader stores their indices
++		if (sceShaccCgGetParameterClass(param) == SCE_SHACCCG_PARAMETERCLASS_MATRIX) {
++			matrix_uniform *m = (matrix_uniform *)vglMalloc(sizeof(matrix_uniform));
++			m->ptr = sceGxmProgramFindParameterByName(s->prog, sceShaccCgGetParameterName(param));
++			m->chain = s->mat;
++			s->mat = m;
++		}
++		param = sceShaccCgGetNextParameter(param);
++	}
++	shark_clear_output();
++	return 1;
++}
++static void sh3_offline_free(shader *s) {
++	matrix_uniform *m = s->mat;
++	while (m) {
++		matrix_uniform *next = (matrix_uniform *)m->chain;
++		vgl_free(m);
++		m = next;
++	}
++	if (s->prog)
++		vgl_free((void *)s->prog);
++	if (s->source)
++		vgl_free(s->source);
++}
++int vglCompileGlslPairToBinary(const char *vs_src, const char *fs_src, void **vbin, uint32_t *vsz, void **fbin, uint32_t *fsz) {
++	*vbin = *fbin = NULL;
++	if (!is_shark_online && !start_shader_compiler())
++		return 0;
++	shader v, f;
++	vgl_memset(&v, 0, sizeof(v));
++	vgl_memset(&f, 0, sizeof(f));
++	v.type = GL_VERTEX_SHADER;
++	f.type = GL_FRAGMENT_SHADER;
++	v.is_glsl = f.is_glsl = GL_TRUE;
++	v.size = strlen(vs_src);
++	f.size = strlen(fs_src);
++	v.source = (char *)vglMalloc(v.size + 1);
++	f.source = (char *)vglMalloc(f.size + 1);
++	vgl_fast_memcpy(v.source, vs_src, v.size + 1);
++	vgl_fast_memcpy(f.source, fs_src, f.size + 1);
++	glsl_offline_pair = GL_TRUE;   // as glLinkProgram does with VGL_MODE_SHADER_PAIR, without changing the global mode
++	glsl_translator_set_process(&v, &f);
++	glsl_offline_pair = GL_FALSE;
++	int ok = sh3_offline_compile(&v) && sh3_offline_compile(&f);
++	if (ok) {
++		size_t a, b;
++		*vbin = serialize_shader(NULL, &a, &v, GL_FALSE);
++		*fbin = serialize_shader(NULL, &b, &f, GL_FALSE);
++		*vsz = (uint32_t)a;
++		*fsz = (uint32_t)b;
++	}
++	sh3_offline_free(&v);
++	sh3_offline_free(&f);
++	return ok;
++}
++
+ void reset_custom_shaders(void) {
+ 	// Init custom shaders
+ 	sceClibMemset(shaders, 0, sizeof(uint32_t) * MAX_CUSTOM_SHADERS);
+diff --git a/source/utils/glsl_utils.c b/source/utils/glsl_utils.c
+index c39ebb1..7091a1f 100644
+--- a/source/utils/glsl_utils.c
++++ b/source/utils/glsl_utils.c
+@@ -167,6 +167,10 @@ int glsl_current_ref_idx = 0;
+ GLboolean glsl_is_first_shader = GL_TRUE;
+ GLboolean glsl_precision_low = GL_FALSE;
+ GLenum glsl_sema_mode = VGL_MODE_POSTPONED;
++// sh3vita: set by vglCompileGlslPairToBinary (a background thread) while it translates a pair: the translator then
++// works in shader-pair mode without touching glsl_sema_mode, which the GL thread reads at the same time.
++GLboolean glsl_offline_pair = GL_FALSE;
++#define GLSL_MODE (glsl_offline_pair ? VGL_MODE_SHADER_PAIR : glsl_sema_mode)
+ binds_map glsl_bindings_map;
+ #ifdef HAVE_FIXED_ATTRIBUTES
+ char glsl_attributes[VERTEX_ATTRIBS_NUM][128];
+@@ -1296,7 +1300,7 @@ void glsl_translator_process(shader *s) {
+ 	size += strlen(glsl_ffp_hdr);
+ #endif
+ #ifndef SKIP_ERROR_HANDLING
+-	if (glsl_sema_mode == VGL_MODE_GLOBAL)
++	if (GLSL_MODE == VGL_MODE_GLOBAL)
+ 		glsl_current_ref_idx++;
+ #endif
+ 	if (s->type == GL_VERTEX_SHADER)
+@@ -1437,7 +1441,7 @@ void glsl_translator_process(shader *s) {
+ 	strcat(s->source, out);
+ 	glsl_preprocessor_clean();
+ 
+-	switch (glsl_sema_mode) {
++	switch (GLSL_MODE) {
+ 		case VGL_MODE_SHADER_PAIR:
+ 			glsl_translate_with_shader_pair(text, s->type, hasFrontFacing);
+ 			break;
+@@ -1450,7 +1454,7 @@ void glsl_translator_process(shader *s) {
+ 	}
+ 	
+ 	// Replacing all marked varying with actual bindings if custom bindings are used
+-	if (glsl_custom_bindings_num > 0 || glsl_sema_mode == VGL_MODE_GLOBAL) {
++	if (glsl_custom_bindings_num > 0 || GLSL_MODE == VGL_MODE_GLOBAL) {
+ 		// Texcoords
+ 		char *str = strstr(s->source, "\v");
+ 		while (str) {
+@@ -1465,7 +1469,7 @@ void glsl_translator_process(shader *s) {
+ 			start++;
+ 			int idx = -1;
+ 			*end = 0;
+-			if (glsl_sema_mode == VGL_MODE_GLOBAL) {
++			if (GLSL_MODE == VGL_MODE_GLOBAL) {
+ 				for (int j = 0; j < MAX_CG_TEXCOORD_ID; j++) {
+ 					idx = j;
+ 					for (int i = 0; i < glsl_custom_bindings_num; i++) {
+@@ -1515,7 +1519,7 @@ void glsl_translator_process(shader *s) {
+ 			start++;
+ 			int idx = -1;
+ 			*end = 0;
+-			if (glsl_sema_mode == VGL_MODE_GLOBAL) {
++			if (GLSL_MODE == VGL_MODE_GLOBAL) {
+ 				for (int j = 0; j < MAX_CG_COLOR_ID; j++) {
+ 					idx = j;
+ 					for (int i = 0; i < glsl_custom_bindings_num; i++) {
+@@ -1618,7 +1622,7 @@ void glsl_translator_process(shader *s) {
+ #endif
+ 
+ 	vgl_fast_memcpy(&s->semantics, &glsl_bindings_map, sizeof(binds_map));
+-	if (glsl_sema_mode == VGL_MODE_SHADER_PAIR) {
++	if (GLSL_MODE == VGL_MODE_SHADER_PAIR) {
+ 		glsl_is_first_shader = !glsl_is_first_shader;
+ 		if (glsl_is_first_shader) {
+ 			vgl_memset(glsl_bindings_map.texcoord_used, GL_FALSE, sizeof(GLboolean) * MAX_CG_TEXCOORD_ID);

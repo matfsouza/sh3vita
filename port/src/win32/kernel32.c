@@ -454,7 +454,26 @@ typedef struct {
     SDL_atomic_t pfgot, pfdone, pfabort;
     struct { long key, pos; uint32_t n; } nx[8]; unsigned nxi;
     long lastpos; uint32_t lastn;
+    uint32_t h;       // its handle (h_release in file_release)
+    SDL_mutex *mu;    // one call at a time on a handle, as Windows does per file object
 } File;
+// Every call on a file handle: file_acquire ... file_release (h_acquire / h_release, handle_ref.h). A handle closed by
+// another thread while a call runs stays valid until that call returns (it used to be freed at once: a loader thread
+// then seeked a closed descriptor, Vita crash in __vita_fd_grab when the inventory opened the options).
+static uint32_t file_destroy(File *f);
+static File *file_acquire(uint32_t h) {
+    File *f = h_acquire(h, H_FILE);
+    if (f) SDL_LockMutex(f->mu);
+    return f;
+}
+static void file_release(File *f) {
+    if (!f) return;
+    SDL_UnlockMutex(f->mu);
+    if (h_release(f->h)) {
+        rt_log("[file] %s closed after the call that was still using it\n", f->path);
+        file_destroy(f);
+    }
+}
 static uint32_t s_pf_mem;
 static uint32_t file_error(int error, uint32_t fallback);
 static uint32_t file_status(uint32_t error);
@@ -545,6 +564,7 @@ K(CreateFileA) {
     }
     fl->f = f;
     fl->ro = !(access & 0x40000000u);
+    fl->mu = SDL_CreateMutex();
 #ifdef __vita__
     // Read-only files are unbuffered: read_direct reads the descriptor itself, and a buffered newlib FILE
     // moves the descriptor on its own (fseek reads a whole block ahead), so a second direct read on the same handle
@@ -558,7 +578,7 @@ K(CreateFileA) {
     fl->pfreuse=fl->ro && reuse && !strcmp(reuse,"1") && ext &&
         (!SDL_strcasecmp(ext,".arc") || !SDL_strcasecmp(ext,".afs"));   // SH3 immutable archives (SH4 used .sh4/.pac)
     w32_set_last_error(c, 0);
-    uint32_t h = h_new(H_FILE, fl);
+    uint32_t h = fl->h = h_new(H_FILE, fl);
     rt_log("CreateFileA(\"%s\") -> %x%s\n", gp, h, c == g_main_cpu ? "" : " (other thread)");
     STDRET(7, h);
 }
@@ -764,7 +784,7 @@ static uint32_t read_direct(FILE *fp, uint8_t *dst, uint32_t n, int *error) {
 }
 K(ReadFile) {
     HOSTFN;
-    File *f = file_of(ARG(1));
+    File *f = file_acquire(ARG(1));
     uint32_t buf = ARG(2), n = ARG(3), outn = ARG(4), ov = ARG(5);
     uint32_t error = 0, got = 0;
     int io_error = 0;
@@ -845,6 +865,7 @@ K(ReadFile) {
                ARG(1), pos0, n, got, error, io_error);
         w32_set_last_error(c, error);
     }
+    file_release(f);
     STDRET(5, error ? 0 : 1);
 }
 // Translate storage failures at the compatibility boundary. Capture errno
@@ -876,7 +897,7 @@ static uint32_t file_status(uint32_t error) {
 }
 K(WriteFile) {
     HOSTFN;
-    File *f = file_of(ARG(1));
+    File *f = file_acquire(ARG(1));
     uint32_t buf = ARG(2), n = ARG(3), outn = ARG(4), ov = ARG(5);
     uint32_t put = 0, error = 0;
     if (outn) W32(outn, 0);
@@ -906,6 +927,7 @@ K(WriteFile) {
         rt_log("[file] WriteFile h=%x requested=%u written=%u error=%u\n", ARG(1), n, put, error);
         w32_set_last_error(c, error);
     }
+    file_release(f);
     STDRET(5, error == 0);
 }
 K(GetOverlappedResult) {
@@ -926,20 +948,21 @@ K(GetOverlappedResult) {
 }
 K(SetFilePointer) {
     HOSTFN;
-    File *f = file_of(ARG(1));
-    if (!f) STDRET(4, 0xffffffffu);
+    File *f = file_acquire(ARG(1));
+    if (!f) { w32_set_last_error(c, 6); STDRET(4, 0xffffffffu); }
     int64_t off = (int32_t)ARG(2);
     if (ARG(3)) off = (int64_t)(((uint64_t)R32(ARG(3)) << 32) | ARG(2));
     fseek(f->f, (long)off, ARG(4) == 0 ? SEEK_SET : ARG(4) == 1 ? SEEK_CUR : SEEK_END);
     long pos = ftell(f->f);
     if (file_traced(f)) rt_log("[ftrace] SetFilePointer %s off=%lld how=%u -> %ld\n", f->path, (long long)off, ARG(4), pos);
     if (ARG(3)) W32(ARG(3), 0);
+    file_release(f);
     STDRET(4, (uint32_t)pos);
 }
 K(SetEndOfFile) {
     HOSTFN;
-    File *f = file_of(ARG(1));
-    if (!f || f->ro) { w32_set_last_error(c, 5); STDRET(1, 0); }
+    File *f = file_acquire(ARG(1));
+    if (!f || f->ro) { file_release(f); w32_set_last_error(c, 5); STDRET(1, 0); }
     fflush(f->f);
     long pos = ftell(f->f);
 #ifdef _WIN32
@@ -947,15 +970,19 @@ K(SetEndOfFile) {
 #else
     int ok = pos >= 0 && ftruncate(fileno(f->f), pos) == 0;
 #endif
+    file_release(f);
     STDRET(1, ok);
 }
-// Host stream and path of an open file handle (CreateFileMapping/MapViewOfFile in sh3_imports.c).
-FILE *w32_file_stream(uint32_t h, const char **path) {
-    File *f = file_of(h);
+// Host stream and path of an open file handle for CreateFileMapping/MapViewOfFile (sh3_imports.c): held like any call
+// on the handle (no other thread reads or moves the stream, nobody closes it) until w32_file_stream_end(*hold).
+FILE *w32_file_stream(uint32_t h, const char **path, void **hold) {
+    File *f = file_acquire(h);
+    *hold = f;
     if (!f) return NULL;
     if (path) *path = f->path;
     return f->f;
 }
+void w32_file_stream_end(void *hold) { file_release(hold); }
 // CreateFileW: the game only passes ASCII paths; narrow it into a guest scratch string and reuse CreateFileA.
 K(CreateFileW) {
     HOSTFN;
@@ -971,49 +998,63 @@ K(CreateFileW) {
 }
 K(GetFileSize) {
     HOSTFN;
-    File *f = file_of(ARG(1));
-    if (!f) STDRET(2, 0xffffffffu);
+    File *f = file_acquire(ARG(1));
+    if (!f) { w32_set_last_error(c, 6); STDRET(2, 0xffffffffu); }
     long cur = ftell(f->f);
     fseek(f->f, 0, SEEK_END);
     long n = ftell(f->f);
     fseek(f->f, cur, SEEK_SET);
+    file_release(f);
     rt_log("GetFileSize h=%x -> %ld\n", ARG(1), n);
     if (ARG(2)) W32(ARG(2), 0);
     STDRET(2, (uint32_t)n);
 }
 K(FlushFileBuffers) {
     HOSTFN;
-    File *f = file_of(ARG(1));
+    File *f = file_acquire(ARG(1));
     if (!f) { w32_set_last_error(c, 6); STDRET(1, 0); }
-    if (f->ro) { w32_set_last_error(c, 5); STDRET(1, 0); }
+    if (f->ro) { file_release(f); w32_set_last_error(c, 5); STDRET(1, 0); }
     errno = 0;
     if (fflush(f->f)) {
         uint32_t error = file_error(errno, 29);
+        file_release(f);
         rt_log("[file] FlushFileBuffers h=%x error=%u\n", ARG(1), error);
         w32_set_last_error(c, error);
         STDRET(1, 0);
     }
+    file_release(f);
     // This drains stdio only; physical-media synchronisation is a separate
     // platform contract, not a promise of power-loss durability.
     STDRET(1, 1);
 }
+// Closes the stream and frees the handle's file: by CloseHandle when no call runs, otherwise by the last file_release.
+static uint32_t file_destroy(File *f) {
+    uint32_t error = 0;
+    pf_stop(f); pf_head_forget(f); pf_release(f->pfcap); free(f->pf);
+    errno = 0;
+    if (fclose(f->f)) error = file_error(errno, 29);
+    if (f->commit) {
+        if (!error && sw_commit(f->path)) error = file_error(errno, 29);
+        rt_log("[file] %s %s\n", f->path, error ? "NOT saved (previous file kept)" : "saved");
+    }
+    if (f->mu) SDL_DestroyMutex(f->mu);
+    free(f);
+    return error;
+}
 K(CloseHandle) {
     HOSTFN;
     uint32_t h = ARG(1);
-    File *f = file_of(h);
     if (h_type(h) == H_FREE) { w32_set_last_error(c, 6); STDRET(1, 0); }
     uint32_t error = 0;
-    if (f) {
-        pf_stop(f); pf_head_forget(f); pf_release(f->pfcap); free(f->pf);
-        errno = 0;
-        if (fclose(f->f)) error = file_error(errno, 29);
-        if (f->commit) {
-            if (!error && sw_commit(f->path)) error = file_error(errno, 29);
-            rt_log("[file] %s %s\n", f->path, error ? "NOT saved (previous file kept)" : "saved");
-        }
-        free(f);
-    }
-    h_close(h);
+    int now = 0;
+    if (h_type(h) == H_FILE) {   // the file (and its number) lives until its last running call
+        File *f = h_retire(h, H_FILE, &now);
+        if (f && now) error = file_destroy(f);
+        else if (f) rt_log("[file] CloseHandle h=%x while another thread still uses %s: closed when it returns\n", h, f->path);
+    } else if (h_type(h) == H_MAPPING) {
+        void *m = h_retire(h, H_MAPPING, &now);
+        if (m && now) free(m);   // otherwise by MapViewOfFile when it returns (sh3_imports.c)
+    } else h_close(h);   // event, thread...: never freed, the number is free at once
     if (error) {
         rt_log("[file] CloseHandle h=%x error=%u\n", h, error);
         w32_set_last_error(c, error);

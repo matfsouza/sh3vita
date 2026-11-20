@@ -7,6 +7,6 @@
 // (the installer could leave movies/sounds on the DVD). All point at the guest root, C:\SH3\ (GUEST_ROOT).
 // Copies the REG_SZ value (with its NUL) into out and returns its size in bytes, or 0 if the value does not exist.
 uint32_t reg_default_value(const char *name, char *out, size_t cap);
-// Whether a key exists: only SOFTWARE\KONAMI\SILENT HILL 3 (any case, optional trailing backslash). SH3 also
-// probes SOFTWARE\Konami\Silent Hill2, which must fail as on a PC without Silent Hill 2.
+// Whether a key exists (any case, optional trailing backslash): SOFTWARE\KONAMI\SILENT HILL 3, and
+// SOFTWARE\Konami\Silent Hill2 so the game's Silent Hill 2 references play; every other key is absent.
 int reg_key_exists(const char *path);

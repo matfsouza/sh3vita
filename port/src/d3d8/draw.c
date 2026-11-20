@@ -82,6 +82,23 @@ static void catf(char **s, const char *fmt, ...) {
 #define GLSL_PRE_VS "#version 120\n"
 #define GLSL_PRE_FS "#version 120\n"
 #endif
+// Game programs are written for the platform's compiler; the PC can also write the Vita's exact text
+// (SH3_SHADER_LIST, shader_list_note below) so the Vita can compile every program ahead of time.
+#ifdef __vita__
+static int g_glsl_vita = 1;
+#else
+static int g_glsl_vita = 0;
+#endif
+static const char *pre_vs(void) { return g_glsl_vita ? "" : "#version 120\n"; }
+static const char *pre_fs(void) { return g_glsl_vita ? "precision mediump float;\n" : "#version 120\n"; }
+// Key of a program in the shader cache (draw.c shc_*, tools/shader_cache_bundle.py): FNV-1a of VS, 0xff, FS.
+static uint64_t shc_key(const char *vs, const char *fs) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (const char *s = vs; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull;
+    h = (h ^ 0xff) * 0x100000001b3ull;
+    for (const char *s = fs; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull;
+    return h;
+}
 
 static GLuint compile(GLenum type, const char *src) {
     GLuint s = glCreateShader(type);
@@ -124,24 +141,46 @@ static int shc_write_file(FILE *f, const void *data, size_t n) {
     int ok = fwrite(&header, 1, sizeof header, f) == sizeof header && fwrite(data, 1, n, f) == n;
     return fclose(f) == 0 && ok;
 }
-static uint64_t shc_key(const char *vs, const char *fs) {
-    uint64_t h = 0xcbf29ce484222325ull;
-    for (const char *s = vs; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull;
-    h = (h ^ 0xff) * 0x100000001b3ull;
-    for (const char *s = fs; *s; s++) h = (h ^ (uint8_t)*s) * 0x100000001b3ull;
-    return h;
-}
 static int shc_opt(void) {
     const char *opt = getenv("SH3_SHADER_OPT");
     return opt && opt[0] >= '1' && opt[0] <= '3' && opt[1] == 0 ? opt[0] - '0' : 3;
 }
-static FILE *shc_open_bundle(const char *vs, const char *fs) {
-    const char *enabled = getenv("SH3_BUNDLED_CACHE");
-    if ((enabled && !strcmp(enabled, "0")) || shc_opt() != 3) return NULL;
-    char path[600];
-    snprintf(path, sizeof path, SH3_SHADER_BUNDLE_ROOT "/" SH3_SHADER_CACHE_ABI "/programs/%016llx.bin",
-             (unsigned long long)shc_key(vs, fs));
-    return fopen(path, "rb");
+// Programs shipped in the VPK: one pack (tools/shader_cache_bundle.py write_pak): "SH3PAK1\0", count, entries sorted
+// by key (u64 key, u32 offset, u32 size), then each program file. The index is read once; the file stays open (the
+// render thread reads it; at boot, before that thread starts, the main thread does).
+static struct { int tried; FILE *f; uint32_t n; uint8_t *index; } shc_pak;
+static int shc_pak_find(uint64_t key, uint32_t *off, uint32_t *size) {
+    if (!shc_pak.tried) {
+        shc_pak.tried = 1;
+        const char *enabled = getenv("SH3_BUNDLED_CACHE");
+        if ((enabled && !strcmp(enabled, "0")) || shc_opt() != 3) return 0;
+        FILE *f = fopen(SH3_SHADER_BUNDLE_ROOT "/" SH3_SHADER_CACHE_ABI "/programs.pak", "rb");
+        char magic[8]; uint32_t n = 0;
+        if (f && fread(magic, 1, 8, f) == 8 && !memcmp(magic, "SH3PAK1\0", 8) && fread(&n, 4, 1, f) == 1 && n < 100000) {
+            shc_pak.index = malloc((size_t)n * 16);
+            if (shc_pak.index && fread(shc_pak.index, 16, n, f) == n) { shc_pak.f = f; shc_pak.n = n; f = NULL; }
+            else { free(shc_pak.index); shc_pak.index = NULL; }
+        }
+        if (f) fclose(f);
+        rt_log("[shader-cache] bundle pack: %u programs\n", shc_pak.n);
+    }
+    uint32_t lo = 0, hi = shc_pak.n;
+    while (lo < hi) {   // binary search on the sorted keys
+        uint32_t mid = (lo + hi) / 2;
+        uint64_t k; memcpy(&k, shc_pak.index + (size_t)mid * 16, 8);
+        if (k == key) { memcpy(off, shc_pak.index + (size_t)mid * 16 + 8, 4); memcpy(size, shc_pak.index + (size_t)mid * 16 + 12, 4); return 1; }
+        if (k < key) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+// The bundled program of this key, in a malloc'd buffer (NULL if the pack does not have it).
+static uint8_t *shc_pak_read(uint64_t key, size_t *n) {
+    uint32_t off, size;
+    if (!shc_pak_find(key, &off, &size) || size > 2 * 1024 * 1024) return NULL;
+    uint8_t *b = malloc(size);
+    if (b && (fseek(shc_pak.f, (long)off, SEEK_SET) || fread(b, 1, size, shc_pak.f) != size)) { free(b); b = NULL; }
+    *n = size;
+    return b;
 }
 static FILE *shc_open(const char *vs, const char *fs, const char *mode) {
     static char directory[48];
@@ -165,23 +204,20 @@ static FILE *shc_open(const char *vs, const char *fs, const char *mode) {
     snprintf(path, sizeof path, "%s/%s/%016llx.bin", g_game_dir, directory, (unsigned long long)shc_key(vs, fs));
     return fopen(path, mode);
 }
-static int shc_load_file(GLuint *program, FILE *f) {
+// A whole program file (header + VS + FS) in memory -> linked program. Returns 1 on success.
+static int shc_load_bytes(GLuint *program, const uint8_t *data, size_t total) {
     GLuint p = *program;
-    if (!f) return 0;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
     ShcHeader header;
-    int ok = n > (long)sizeof header + 8 && n <= 2 * 1024 * 1024 &&
-        fread(&header, 1, sizeof header, f) == sizeof header &&
+    int ok = data && total > sizeof header + 8 && total <= 2 * 1024 * 1024;
+    if (ok) memcpy(&header, data, sizeof header);
+    ok = ok &&
         // Third byte '4': files written before (the writer's magic was wrong); same contents, still valid.
         (!memcmp(header.magic, "SH3GXP1\0", 8) || (header.magic[2] == '4' && !memcmp(header.magic + 3, "GXP1\0", 5))) && header.version == 1 &&
-        header.bytes == (size_t)n - sizeof header;
+        header.bytes == total - sizeof header;
     size_t bytes = ok ? header.bytes : 0;
-    uint8_t *b = bytes ? malloc(bytes) : NULL;
-    ok = b && fread(b, 1, bytes, f) == bytes && shc_checksum(b, bytes) == header.checksum;
-    fclose(f);
-    n = (long)bytes;
+    const uint8_t *b = ok ? data + sizeof header : NULL;
+    ok = ok && shc_checksum(b, bytes) == header.checksum;
+    long n = (long)bytes;
     uint32_t vl = 0, fl = 0;
     if (ok) memcpy(&vl, b, 4);
     // Validate using subtraction before forming any file offset. A corrupt signed
@@ -210,11 +246,25 @@ static int shc_load_file(GLuint *program, FILE *f) {
             rt_log("[shader-cache] cached program failed to link; recompiling source\n");
         }
     }
+    return ok;
+}
+static int shc_load_file(GLuint *program, FILE *f) {
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *b = n > 0 && n <= 2 * 1024 * 1024 ? malloc((size_t)n) : NULL;
+    int ok = b && fread(b, 1, (size_t)n, f) == (size_t)n && shc_load_bytes(program, b, (size_t)n);
+    fclose(f);
     free(b);
     return ok;
 }
 static int shc_load(GLuint *program, const char *vs, const char *fs) {
-    if (shc_load_file(program, shc_open_bundle(vs, fs))) {
+    size_t n = 0;
+    uint8_t *b = shc_pak_read(shc_key(vs, fs), &n);
+    int ok = b && shc_load_bytes(program, b, n);
+    free(b);
+    if (ok) {
         rt_log("[shader-cache] hit bundle abi=" SH3_SHADER_CACHE_ABI "\n");
         return 1;
     }
@@ -223,6 +273,19 @@ static int shc_load(GLuint *program, const char *vs, const char *fs) {
         return 1;
     }
     return 0;
+}
+// A program the game needed and nothing had compiled before (it cost a pause): its text goes to
+// <game dir>/shaders_seen.lst, in the PC list format (shader_list_note), so the next VPK can ship it compiled.
+static void shc_note_seen(const char *vs, const char *fs) {
+    char path[600];
+    snprintf(path, sizeof path, "%s/shaders_seen.lst", g_game_dir);
+    FILE *f = fopen(path, "ab");
+    if (!f) return;
+    fprintf(f, "@@SH3PROG %016llx %u %u\n", (unsigned long long)shc_key(vs, fs), (unsigned)strlen(vs), (unsigned)strlen(fs));
+    fwrite(vs, 1, strlen(vs), f);
+    fwrite(fs, 1, strlen(fs), f);
+    fclose(f);
+    rt_log("[shader-list] new program %016llx noted in shaders_seen.lst\n", (unsigned long long)shc_key(vs, fs));
 }
 static void shc_save(GLuint p, GLuint v, GLuint fr, const char *vs, const char *fs) {
     GLint len = 0;
@@ -240,6 +303,124 @@ static void shc_save(GLuint p, GLuint v, GLuint fr, const char *vs, const char *
     if (f && !shc_write_file(f, b, 8 + (size_t)vl + (size_t)fl))
         rt_log("[shader-cache] writable cache write failure\n");
     free(b);
+}
+
+// ---------- background compilation ----------
+// A program the cache lacks used to be compiled right here, on the render thread: 1.2-1.7 s frozen (a pistol shot, a
+// room seen for the first time). Now link_async queues it (shader_jobs.h) and the draw is skipped for the few frames
+// a worker thread needs; the worker compiles with vitaGL's vglCompileGlslPairToBinary (port/patches/
+// vitagl-sh3-async.patch, no GL state), stores the program in the writable cache and notes it in shaders_seen.lst;
+// a later frame loads the binaries (~20 ms, as a cache hit). One lock (g_shark_lock) keeps every use of the shader
+// compiler apart: the worker's compiles, a compile on this thread (fallback) and unloading it. The worker unloads the
+// compiler after 5 s without work (~20 MB of the host heap; kept loaded, the movie decoder's allocation failed).
+// SH3_SHADER_SYNC=1 restores the old behaviour. During the boot compile (g_pframe == 0) everything stays synchronous.
+#include "shader_jobs.h"
+#include <SDL2/SDL_thread.h>
+#include <SDL2/SDL_mutex.h>
+extern int vglCompileGlslPairToBinary(const char *vs, const char *fs, void **vbin, uint32_t *vsz, void **fbin, uint32_t *fsz);
+static ShaderJobs g_sj;
+static char *g_sj_vs[SJ_MAX], *g_sj_fs[SJ_MAX];   // texts of each queued job (render thread writes, worker reads)
+static uint8_t *g_sj_bin[SJ_MAX];                 // finished program file (header + both stages), worker writes
+static size_t g_sj_len[SJ_MAX];
+static SDL_mutex *g_sj_lock, *g_shark_lock;
+static SDL_cond *g_sj_cond;
+static volatile int g_shark_loaded;               // the compiler was started since it was last unloaded
+static int sj_worker(void *arg) {
+    (void)arg;
+    SDL_LockMutex(g_sj_lock);
+    for (;;) {
+        int i = sj_next(&g_sj);
+        if (i < 0) {
+            if (SDL_CondWaitTimeout(g_sj_cond, g_sj_lock, 5000) == SDL_MUTEX_TIMEDOUT && g_shark_loaded && !sj_busy(&g_sj)) {
+                SDL_LockMutex(g_shark_lock);
+                glReleaseShaderCompiler();
+                g_shark_loaded = 0;
+                SDL_UnlockMutex(g_shark_lock);
+                rt_log("[shader-async] compiler unloaded after 5 s without work\n");
+            }
+            continue;
+        }
+        const char *vs = g_sj_vs[i], *fs = g_sj_fs[i];
+        uint64_t key = g_sj.key[i];
+        SDL_UnlockMutex(g_sj_lock);
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        void *vb = NULL, *fb = NULL;
+        uint32_t vl = 0, fl = 0;
+        SDL_LockMutex(g_shark_lock);
+        int ok = vglCompileGlslPairToBinary(vs, fs, &vb, &vl, &fb, &fl);
+        g_shark_loaded = 1;
+        SDL_UnlockMutex(g_shark_lock);
+        uint8_t *file = NULL;
+        size_t n = 0;
+        if (ok) {   // the writable cache's file format: header, then [vl][VS][fl][FS]
+            size_t payload = 8 + (size_t)vl + (size_t)fl;
+            n = sizeof(ShcHeader) + payload;
+            file = malloc(n);
+            if (file) {
+                uint8_t *b = file + sizeof(ShcHeader);
+                memcpy(b, &vl, 4); memcpy(b + 4, vb, vl);
+                memcpy(b + 4 + vl, &fl, 4); memcpy(b + 8 + vl, fb, fl);
+                ShcHeader h = {{'S','H','3','G','X','P','1',0}, 1, (uint32_t)payload, shc_checksum(b, payload)};
+                memcpy(file, &h, sizeof h);
+                FILE *f = shc_open(vs, fs, "wb");
+                if (!f || !shc_write_file(f, b, payload)) rt_log("[shader-cache] writable cache write failure\n");
+                shc_note_seen(vs, fs);
+            }
+        }
+        if (vb) vglFree(vb);
+        if (fb) vglFree(fb);
+        rt_log("[shader-async] %016llx %s in %u ms, off the render thread\n", (unsigned long long)key,
+               ok && file ? "compiled" : "FAILED",
+               (unsigned)((SDL_GetPerformanceCounter() - t0) * 1000 / SDL_GetPerformanceFrequency()));
+        SDL_LockMutex(g_sj_lock);
+        g_sj_bin[i] = file;
+        g_sj_len[i] = n;
+        sj_finish(&g_sj, i, ok && file);
+    }
+    return 0;
+}
+// 1: linked into *program; 0: queued or compiling (skip this draw); -1: compile it here (boot, failure, full queue)
+static int link_async(GLuint *program, const char *vs, const char *fs) {
+    static int off = -1;
+    if (off < 0) off = getenv("SH3_SHADER_SYNC") != NULL;
+    if (off || !g_pframe) return -1;
+    if (!g_sj_lock) {
+        g_sj_lock = SDL_CreateMutex();
+        g_shark_lock = SDL_CreateMutex();
+        g_sj_cond = SDL_CreateCond();
+        sj_init(&g_sj);
+        if (!g_sj_lock || !g_shark_lock || !g_sj_cond || !SDL_CreateThread(sj_worker, "sh3shader", NULL)) {
+            rt_log("[shader-async] cannot start the worker: compiling on the render thread\n");
+            off = 1;
+            return -1;
+        }
+    }
+    uint64_t key = shc_key(vs, fs);
+    SDL_LockMutex(g_sj_lock);
+    int st = sj_request(&g_sj, key), r = 0;
+    if (st == SJ_QUEUED) {
+        int i = sj_find(&g_sj, key);
+        if (!g_sj_vs[i]) {
+            g_sj_vs[i] = strdup(vs);
+            g_sj_fs[i] = strdup(fs);
+            if (!g_sj_vs[i] || !g_sj_fs[i]) { free(g_sj_vs[i]); free(g_sj_fs[i]); g_sj_vs[i] = g_sj_fs[i] = NULL; sj_release(&g_sj, i); r = -1; }
+            else { SDL_CondSignal(g_sj_cond); rt_log("[shader-async] %016llx queued (draws skipped until ready)\n", (unsigned long long)key); }
+        }
+    } else if (st == SJ_DONE || st == SJ_FAILED) {
+        int i = sj_take(&g_sj, key);
+        uint8_t *file = g_sj_bin[i];
+        size_t n = g_sj_len[i];
+        free(g_sj_vs[i]); free(g_sj_fs[i]);
+        g_sj_vs[i] = g_sj_fs[i] = NULL;
+        g_sj_bin[i] = NULL;
+        sj_release(&g_sj, i);
+        SDL_UnlockMutex(g_sj_lock);
+        r = file && shc_load_bytes(program, file, n) ? 1 : -1;
+        free(file);
+        return r;
+    } else if (st == SJ_FULL) r = -1;
+    SDL_UnlockMutex(g_sj_lock);
+    return r;
 }
 #endif
 
@@ -260,6 +441,17 @@ static GLuint link_(const char *vs, const char *fs, int prepare) {
         rt_log("[link] #%u from cache, %u ms\n", ++s_link_n, (unsigned)((SDL_GetPerformanceCounter() - t0) * 1000 / SDL_GetPerformanceFrequency()));
         return p;
     }
+    if (!prepare) {
+        int a = link_async(&p, vs, fs);
+        if (a == 1) {
+            rt_log("[link] #%u compiled in the background, linked in %u ms\n", ++s_link_n,
+                   (unsigned)((SDL_GetPerformanceCounter() - t0) * 1000 / SDL_GetPerformanceFrequency()));
+            return p;
+        }
+        if (a == 0) { glDeleteProgram(p); return 0; }   // not ready: the caller skips the draw
+    }
+    if (g_shark_lock) SDL_LockMutex(g_shark_lock);   // the worker may be using the compiler
+    g_shark_loaded = 1;
 #endif
     GLuint v = compile(GL_VERTEX_SHADER, vs), f = compile(GL_FRAGMENT_SHADER, fs);
     glAttachShader(p, v);
@@ -274,7 +466,8 @@ static GLuint link_(const char *vs, const char *fs, int prepare) {
         rt_log("[gl] link failure: %s\n", log);
     }
 #ifdef __vita__
-    else if (!prepare) shc_save(p, v, f, vs, fs);
+    else if (!prepare) { shc_save(p, v, f, vs, fs); shc_note_seen(vs, fs); }
+    if (g_shark_lock) SDL_UnlockMutex(g_shark_lock);
 #endif
     rt_log("[link] #%u compiled, %u ms\n", ++s_link_n, (unsigned)((SDL_GetPerformanceCounter() - t0) * 1000 / SDL_GetPerformanceFrequency()));
     glDeleteShader(v);
@@ -283,6 +476,102 @@ static GLuint link_(const char *vs, const char *fs, int prepare) {
 }
 
 #ifdef __vita__
+// Compiles, before the game starts, every program of a list written on the PC (SH3_SHADER_LIST, shader_list_note)
+// that is neither in the VPK's bundle nor in the writable cache. A marker named after the list's checksum makes later
+// boots skip the check. Returns the number of programs compiled, -1 if there is no list.
+static int shc_have(uint64_t key) {
+    char path[600];
+    struct stat st;
+    uint32_t off, size;
+    if (shc_pak_find(key, &off, &size)) return 1;
+    snprintf(path, sizeof path, "%s/shc-" SH3_SHADER_CACHE_ABI "/%016llx.bin", g_game_dir, (unsigned long long)key);
+    return !stat(path, &st);
+}
+// One "@@SH3PROG <key> <vs bytes> <fs bytes>\n" header at p (end = end of the buffer): fills the fields and returns
+// the header's length, 0 if p holds no valid entry.
+static int list_entry(const char *p, const char *end, unsigned long long *key, unsigned *vl, unsigned *fl) {
+    static const char tag[] = "@@SH3PROG ";
+    const char *nl = memchr(p, '\n', (size_t)(end - p));
+    if (!nl || nl - p < (long)sizeof tag || memcmp(p, tag, sizeof tag - 1)) return 0;
+    char *q;
+    *key = strtoull(p + sizeof tag - 1, &q, 16);
+    *vl = (unsigned)strtoul(q, &q, 10);
+    *fl = (unsigned)strtoul(q, &q, 10);
+    int used = (int)(nl + 1 - p);
+    if (q != nl || !*vl || !*fl || (size_t)(end - p) < (size_t)used + *vl + *fl) return 0;
+    return used;
+}
+int gfx_compile_shader_list(const char *list, void (*progress)(unsigned, unsigned)) {
+    FILE *f = fopen(list, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *b = n > 0 ? malloc((size_t)n + 1) : NULL;
+    int ok = b && fread(b, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!ok) { free(b); return -1; }
+    b[n] = 0;
+    char marker[600];
+    snprintf(marker, sizeof marker, "%s/shc-" SH3_SHADER_CACHE_ABI "/list-%016llx.done", g_game_dir,
+             (unsigned long long)shc_checksum(b, (size_t)n));
+    struct stat st;
+    if (!stat(marker, &st)) { free(b); return 0; }
+    // first pass: count the entries and the missing programs
+    unsigned total = 0, missing = 0;
+    for (char *p = b; p < b + n;) {
+        unsigned long long key; unsigned vl, fl;
+        int used = list_entry(p, b + n, &key, &vl, &fl);
+        if (!used) break;
+        total++;
+        if (!shc_have(key)) missing++;
+        p += used + vl + fl;
+    }
+    rt_log("[shader-list] %u programs, %u to compile\n", total, missing);
+    uint64_t t0 = SDL_GetPerformanceCounter();
+    unsigned done = 0, failed = 0;
+    int saved_queue = q_on;
+    q_on = 0;   // startup, before the game or render thread owns any GL objects (as gfx_prewarm_shader_bank)
+    if (missing && progress) progress(0, missing);
+    for (char *p = b; p < b + n && missing;) {
+        unsigned long long key; unsigned vl, fl;
+        int used = list_entry(p, b + n, &key, &vl, &fl);
+        if (!used) break;
+        char *vs = p + used, *fs = vs + vl;
+        p = fs + fl;
+        if (shc_have(key)) continue;
+        char *v = malloc(vl + 1), *fr = malloc(fl + 1);
+        memcpy(v, vs, vl); v[vl] = 0;
+        memcpy(fr, fs, fl); fr[fl] = 0;
+        if (shc_key(v, fr) != key) { rt_log("[shader-list] %016llx: text does not match its key\n", key); failed++; }
+        else {
+            GLuint prog = link_(v, fr, 0);
+            GLint linked = 0;
+            glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+            glDeleteProgram(prog);
+            if (!linked) failed++;
+        }
+        free(v); free(fr);
+        if (progress) progress(++done, missing);
+    }
+    // The shader compiler takes ~20 MB of the host heap while loaded (log 21 MB used after 508 programs
+    // against 1.8 MB in a normal session); kept loaded, the movie decoder's next allocation failed (crash in
+    // plm_buffer_write). Unload it: vitaGL starts it again by itself if the game later needs a program.
+    if (done) glReleaseShaderCompiler();
+    q_on = saved_queue;
+    rt_log("[shader-list] compiled %u, failed %u, %u ms\n", done, failed,
+           (unsigned)((SDL_GetPerformanceCounter() - t0) * 1000 / SDL_GetPerformanceFrequency()));
+    if (!failed) {
+        char dir[600];
+        snprintf(dir, sizeof dir, "%s/shc-" SH3_SHADER_CACHE_ABI, g_game_dir);
+        mkdir(dir, 0777);
+        FILE *m = fopen(marker, "wb");
+        if (m) fclose(m);
+    }
+    free(b);
+    return (int)done;
+}
+
 // Optional prototype: prepare static vertex stages before entering game code.
 // A separate vitaGL cache of exact translated Cg stages is required; a program
 // linked against a dummy fragment stage must never replace a game's program.
@@ -366,7 +655,7 @@ int gfx_prewarm_shader_bank(const char *path, void (*progress)(unsigned, unsigne
 // ---------- pipeline fixe: sommets (FVF) ----------
 static char *ffp_vs(uint32_t fvf) {
     uint32_t pos = fvf & 0xe, ntex = (fvf >> 8) & 0xf;
-    char *s = strf(GLSL_PRE_VS "attribute vec4 aV0;\n%s%s", fvf & 0x40 ? "attribute vec4 aV5;\n" : "",
+    char *s = strf("%sattribute vec4 aV0;\n%s%s", pre_vs(), fvf & 0x40 ? "attribute vec4 aV5;\n" : "",
                    fvf & 0x80 ? "attribute vec4 aV6;\n" : "");
     for (uint32_t i = 0; i < ntex && i < 4; i++) catf(&s, "attribute vec4 aV%u;\n", 7 + i);
     cat(&s, "uniform vec4 uVp;\nuniform vec4 uFlip;\nuniform vec4 c[4];\n"
@@ -383,11 +672,9 @@ static char *ffp_vs(uint32_t fvf) {
         cat(&s, "  vec4 p = vec4(aV0.xyz, 1.0);\n"
                 "  vec4 q = vec4(dot(p, c[0]), dot(p, c[1]), dot(p, c[2]), dot(p, c[3]));\n"
                 "  gl_Position = vec4(q.x, q.y * uFlip.x, q.z * 2.0 - q.w, q.w);\n");
-#ifdef __vita__
     // GLES leaves the size of a point undefined unless the shader writes it; D3D8 points are 1 pixel by default. The
     // game's occlusion probe draws single points: without this they were not drawn at all on the Vita.
-    cat(&s, "  gl_PointSize = 1.0;\n");
-#endif
+    if (g_glsl_vita) cat(&s, "  gl_PointSize = 1.0;\n");
     catf(&s, "  vD0 = %s;\n  vD1 = %s;\n", fvf & 0x40 ? "aV5.zyxw" : "vec4(1.0)", fvf & 0x80 ? "aV6.zyxw" : "vec4(0.0)");
     cat(&s, "  vFog = vD1.w;\n");   // FFP vertex fog = specular alpha
     for (uint32_t i = 0; i < 4; i++) catf(&s, "  vT%u = %s;\n", i, i < ntex ? (i == 0 ? "aV7" : i == 1 ? "aV8" : i == 2 ? "aV9" : "aV10") : "vec4(0.0, 0.0, 0.0, 1.0)");
@@ -497,8 +784,8 @@ static uint64_t frag_opts(Device *d) {
     return o;
 }
 static char *build_fs(Device *d, const char *body, uint64_t opts) {
-    char *s = strf(GLSL_PRE_FS "varying vec4 vD0;\nvarying vec4 vD1;\nvarying vec4 vT0;\nvarying vec4 vT1;\nvarying vec4 vT2;\nvarying vec4 vT3;\nvarying float vFog;\n"
-                   "uniform vec4 pc[8];\nuniform vec4 uTF;\nuniform vec4 uFogC;\nuniform vec4 uFogP;\nuniform float uARef;\n");
+    char *s = strf("%svarying vec4 vD0;\nvarying vec4 vD1;\nvarying vec4 vT0;\nvarying vec4 vT1;\nvarying vec4 vT2;\nvarying vec4 vT3;\nvarying float vFog;\n"
+                   "uniform vec4 pc[8];\nuniform vec4 uTF;\nuniform vec4 uFogC;\nuniform vec4 uFogP;\nuniform float uARef;\n", pre_fs());
     for (int i = 0; i < MAX_STAGES; i++) catf(&s, "uniform sampler2D s%d;\n", i);
     cat(&s, "void main() {\n  vec4 col;\n");
     cat(&s, body);
@@ -526,6 +813,82 @@ static char *build_fs(Device *d, const char *body, uint64_t opts) {
     return s;
 }
 
+// Vertex and fragment text of a game program, for the compiler g_glsl_vita selects.
+static void prog_sources(Device *d, VShader *vs, uint32_t fvf, PShader *ps, uint64_t opts, unsigned cube_mask,
+                         char **vsrc, char **fsrc) {
+    *vsrc = vs ? strf("%s%s", pre_vs(), vs->glsl) : ffp_vs(fvf);
+    char *body = ps ? strf("%s", ps->glsl_body) : ffp_fs_body(d);
+    *fsrc = build_fs(d, body, opts);
+    free(body);
+    if (cube_mask) {
+        char *c = glsl_cube_stages(*fsrc, cube_mask);
+        if (c) { free(*fsrc); *fsrc = c; }
+    }
+}
+// SH3_SHADER_LIST=file (PC): appends the Vita text of every new game program to file. Entry: a line
+// "@@SH3PROG <key> <vs bytes> <fs bytes>" then both texts. The Vita compiles such a list ahead of time
+// (shader_list_compile) and tools/shader_cache_bundle.py ships the results in the VPK.
+static void shader_list_note(Device *d, VShader *vs, uint32_t fvf, PShader *ps, uint64_t opts, unsigned cube_mask) {
+#ifdef __vita__
+    (void)d; (void)vs; (void)fvf; (void)ps; (void)opts; (void)cube_mask;
+#else
+    static const char *path; static int init;
+    static uint64_t *seen; static unsigned nseen, cap;
+    if (!init) { init = 1; path = getenv("SH3_SHADER_LIST"); }
+    if (!path) return;
+    if (!seen) {   // keys already in the file (runs append to it)
+        FILE *f = fopen(path, "rb");
+        char line[128];
+        while (f && fgets(line, sizeof line, f)) {
+            unsigned long long k; unsigned a, b;
+            if (sscanf(line, "@@SH3PROG %llx %u %u", &k, &a, &b) != 3) continue;
+            if (nseen == cap) { cap = cap ? cap * 2 : 256; seen = realloc(seen, cap * sizeof *seen); }
+            seen[nseen++] = k;
+            fseek(f, (long)a + (long)b, SEEK_CUR);
+        }
+        if (f) fclose(f);
+        if (!seen) seen = malloc(sizeof *seen);
+    }
+    // The program as drawn, then (SH3_SHADER_VARIANTS=1) the same material in the other states the game switches
+    // between scenes, cutscenes above all: fog off / per vertex, alpha test off / > / != / >= (the comparisons the
+    // game uses), and the flashlight's cube map on / off. Same vertex shader and shading body; only these change.
+    static int variants = -1;
+    if (variants < 0) variants = getenv("SH3_SHADER_VARIANTS") != NULL;
+    static const uint32_t afs[] = {0, 5, 6, 7};
+    uint32_t keep = (uint32_t)(opts & ~0xffull), orig_af = (uint32_t)(opts & 0xf), orig_fog = (uint32_t)((opts >> 4) & 0xf);
+    for (int n = 0; n < (variants ? 1 + 2 * 4 * 2 : 1); n++) {
+        uint64_t o = opts; unsigned cm = cube_mask;
+        if (n) {
+            int k = n - 1;
+            uint32_t fog = (k & 1) ? 1 : 0, af = afs[(k >> 1) & 3];
+            if (orig_fog > 1 && fog) fog = orig_fog;   // a table fog material keeps its own mode
+            o = keep | af | (uint64_t)fog << 4;
+            cm = (k >> 3) & 1 ? (cube_mask ? 0u : 8u) : cube_mask;   // 8: the flashlight's stage 3
+            (void)orig_af;
+        }
+        g_glsl_vita = 1;
+        char *v, *fr;
+        prog_sources(d, vs, fvf, ps, o, cm, &v, &fr);
+        g_glsl_vita = 0;
+        uint64_t key = shc_key(v, fr);
+        unsigned i = 0;
+        while (i < nseen && seen[i] != key) i++;
+        if (i == nseen) {
+            if (nseen == cap) { cap = cap ? cap * 2 : 256; seen = realloc(seen, cap * sizeof *seen); }
+            seen[nseen++] = key;
+            FILE *f = fopen(path, "ab");
+            if (f) {
+                fprintf(f, "@@SH3PROG %016llx %u %u\n", (unsigned long long)key, (unsigned)strlen(v), (unsigned)strlen(fr));
+                fwrite(v, 1, strlen(v), f); fwrite(fr, 1, strlen(fr), f);
+                fclose(f);
+            }
+            if (!n) rt_log("[shader-list] %016llx noted (%u in the list)\n", (unsigned long long)key, nseen);
+        }
+        free(v); free(fr);
+    }
+#endif
+}
+
 static Prog *get_prog(Device *d, VShader *vs, uint32_t fvf, PShader *ps) {
     uint64_t opts = frag_opts(d);
     // Shader objects and handles are recycled after cutscenes/death. Their host
@@ -543,14 +906,12 @@ static Prog *get_prog(Device *d, VShader *vs, uint32_t fvf, PShader *ps) {
                 rt_fatal("[audit-error] frame=%u program cache aliases a different shader after resource reuse", g_pframe);
             return p;
         }
-    char *vsrc = vs ? strf(GLSL_PRE_VS "%s", vs->glsl) : ffp_vs(fvf);
-    char *body = ps ? strf("%s", ps->glsl_body) : ffp_fs_body(d);
-    char *fsrc = build_fs(d, body, opts);
-    if (cube_mask) {
-        char *c = glsl_cube_stages(fsrc, cube_mask);
-        if (c) { free(fsrc); fsrc = c; }
-        rt_log("[cube] program with cube stages %x (ps=%x)\n", cube_mask, ps ? ps->handle : 0);
-    }
+    char *vsrc, *fsrc;
+    prog_sources(d, vs, fvf, ps, opts, cube_mask, &vsrc, &fsrc);
+    GLuint linked = link(vsrc, fsrc);
+    if (!linked) { free(vsrc); free(fsrc); return NULL; }   // compiling in the background (Vita): skip this draw
+    if (cube_mask) rt_log("[cube] program with cube stages %x (ps=%x)\n", cube_mask, ps ? ps->handle : 0);
+    shader_list_note(d, vs, fvf, ps, opts, cube_mask);
     extern unsigned g_stat_progs;
     g_stat_progs++;
     if (g_stat_progs <= 3) rt_log("[glsl] prog #%u vs=%08x ps=%x\n--- VS ---\n%s--- FS ---\n%s--- fin ---\n",
@@ -562,8 +923,8 @@ static Prog *get_prog(Device *d, VShader *vs, uint32_t fvf, PShader *ps) {
     p->stage_types = stage_types;
     p->vsource = vs ? vs->source_hash : 0;
     p->fsource = ps ? ps->source_hash : 0;
-    p->prog = link(vsrc, fsrc);
-    free(vsrc); free(body); free(fsrc);
+    p->prog = linked;
+    free(vsrc); free(fsrc);
     glUseProgram(p->prog);
     cur_prog = p->prog;
     p->c = glGetUniformLocation(p->prog, "c");
@@ -736,6 +1097,12 @@ static void apply_states(Device *d) {
     else glViewport((GLint)(d->vp.x >> vsh), (GLint)(d->vp.y >> vsh), (GLsizei)(d->vp.w >> vsh), (GLsizei)(d->vp.h >> vsh));
     glDepthRange(d->vp.minz, d->vp.maxz);
     if (rs[7] && d->ds) { glEnable(GL_DEPTH_TEST); glDepthFunc(cmp_of(rs[23])); } else glDisable(GL_DEPTH_TEST);
+#ifndef __vita__
+    {   // SH3_GLOW_ZOFF: glow-material draws (stencil ref 0x60) ignore the depth test
+        static int zoff = -1; if (zoff < 0) zoff = getenv("SH3_GLOW_ZOFF") != NULL;
+        if (zoff && rs[52] && rs[57] == 0x60) glDepthFunc(GL_ALWAYS);
+    }
+#endif
     glDepthMask(rs[14] ? GL_TRUE : GL_FALSE);
     if (rs[27]) {
         glEnable(GL_BLEND);
@@ -1236,6 +1603,63 @@ static int probe_target_skipped(const Device *d) {
 void gfx_draw(Device *d, uint32_t prim, uint32_t first, uint32_t nverts, uint32_t nprims, const void *indices,
               int index32, uint32_t min_index, const uint8_t *up, uint32_t up_stride, const uint8_t *const *inl) {
     if (ctl_skip_draw(d, nverts) || probe_target_skipped(d)) return;
+#ifndef __vita__
+    {   // SH3_GLOWDIAG2 (PC): alpha of the scene copy the game's glow pass tests (0x41c5dd, alpha ref 0x150)
+        static int on = -1, n;
+        if (on < 0) on = getenv("SH3_GLOWDIAG2") != NULL;
+        Texture *t = d->tex[0];
+        // from the first glow-material draw (stencil ref 0x60) of one frame: the 0x20 count after every draw, logged
+        // when it changes, with the state of the draw that changed it
+        static int m2, tracking, done_track; static unsigned last20; static uint32_t prev[8];
+        if (on && tracking && d->rt && d->rt->w == 790) {
+            uint32_t w = d->rt->w, h = d->rt->h;
+            uint8_t *st = malloc((size_t)w * h);
+            glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, st);
+            unsigned s20 = 0;
+            for (uint32_t i = 0; i < w * h; i++) s20 += (st[i] & 0x20) != 0;
+            free(st);
+            if (s20 != last20)
+                rt_log("[glowdiag] 0x20: %u -> %u after draw vs=%x stencil=%u func=%u ref=%x wmask=%x ops=%u/%u/%u z=%u\n",
+                       last20, s20, prev[0], prev[1], prev[2], prev[3], prev[4], prev[5], prev[6], prev[7], d->rs[7]);
+            last20 = s20;
+            if (d->rs[52] && d->rs[56] == 3 && d->rs[58] == 0x20) { tracking = 0; done_track = 1; }   // the glow pass
+        }
+        if (on && !tracking && !done_track && g_pframe >= 2700 && d->rs[52] && d->rs[57] == 0x60) { tracking = 1; last20 = 0; }
+        prev[0] = d->vs; prev[1] = d->rs[52]; prev[2] = d->rs[56]; prev[3] = d->rs[57]; prev[4] = d->rs[59];
+        prev[5] = d->rs[53]; prev[6] = d->rs[54]; prev[7] = d->rs[55];
+        // the glow pass's first draw (0x41c361: stencil EQUAL 0 mask 0x20, alpha writes only): the target as it is
+        if (on && g_pframe >= 2600 && m2 < 3 && d->rs[52] && d->rs[56] == 3 && d->rs[58] == 0x20 && d->rs[168] == 8 && d->rt) {
+            m2++;
+            gfx_bind_target(d);
+            uint32_t w = d->rt->w, h = d->rt->h;
+            uint8_t *px = malloc((size_t)w * h * 4), *st = malloc((size_t)w * h);
+            glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            glReadPixels(0, 0, (GLsizei)w, (GLsizei)h, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, st);
+            unsigned glow = 0, glow_a = 0, any_a = 0, s40 = 0;
+            for (uint32_t i = 0; i < w * h; i++) {
+                any_a += px[i * 4 + 3] > 0; s40 += (st[i] & 0x40) != 0;
+                if (st[i] & 0x20) { glow++; glow_a += px[i * 4 + 3] >= 0x60; }
+            }
+            rt_log("[glowdiag] before 0x41c361: target %ux%u, alpha>0 %u, stencil 0x40 %u, stencil 0x20 %u (alpha>=0x60: %u)\n",
+                   w, h, any_a, s40, glow, glow_a);
+            free(px); free(st);
+        }
+        if (on && g_pframe >= 2600 && n < 40 && d->rs[15] && d->rs[25] == 7 && t && !t->cube && t->w == 790 && (n++ % 8) == 0) {
+            uint32_t ref = d->rs[24];
+            uint8_t *px = malloc((size_t)t->w * t->h * 4);
+            glBindTexture(GL_TEXTURE_2D, tex_gl(t));
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            unsigned hist[8] = {0}, wrap = 0, clamp = 0;
+            for (uint32_t i = 0; i < t->w * t->h; i++) {
+                uint8_t a = px[i * 4 + 3];
+                hist[a >> 5]++; wrap += a >= (ref & 255); clamp += a >= (ref > 255 ? 255 : ref);
+            }
+            rt_log("[glowdiag] ref %x alpha hist %u %u %u %u %u %u %u %u; pass low-8-bits %u, clamped %u\n", ref,
+                   hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], wrap, clamp);
+            free(px);
+        }
+    }
+#endif
     depth_need(d, d->ds && (d->rs[7] || d->rs[52]));
     if (fog_half_on()) {
         int fog = fog_sprite(d);
@@ -1290,6 +1714,7 @@ static void draw_impl(Device *d, uint32_t prim, uint32_t first, uint32_t nverts,
     PShader *ps = ps_get(d->ps);
     { static int seen; if (!seen && d->vs == 0xb) { seen = 1; rt_log("[scene] first draw vs=0x0b at frame %u\n", g_pframe); } }
     Prog *p = get_prog(d, vs, fvf, ps);
+    if (!p) return;   // its program is still compiling in the background: this object shows a few frames later
     use_prog(p->prog);
     if (uniform_valid(p->c)) {
         if (vs) { if (vs->nc && !ctl_nouni && (!p->sent || p->vsc_gen != d->vsc_gen)) { glUniform4fv(p->c, vs->nc, &d->vsc[0][0]); p->vsc_gen = d->vsc_gen; if (ph_on) g_stat_ubytes += vs->nc * 16u; } }
@@ -1816,6 +2241,34 @@ static void dump_display_named(const char *name) {
 void gfx_present(Device *d) {
     SLOW("present", 0, 0);
     fog_end();
+#ifdef __vita__
+    {   // SH3_ASYNC_SELFTEST=1 (env.txt): from frame 300, a program no cache can have (a unique comment) goes through
+        // the background compile; the log tells how long the render thread waited for it (it should never wait)
+        static int test = -1; static unsigned start; static uint64_t worst;
+        if (test < 0) test = getenv("SH3_ASYNC_SELFTEST") != NULL;
+        if (test == 1 && g_pframe >= 300) {
+            static char vs[256], fs[256];
+            if (!start) {
+                start = g_pframe;
+                snprintf(vs, sizeof vs, "attribute vec4 aV0;\nvoid main() { gl_Position = aV0; }\n// selftest %u\n", SDL_GetTicks());
+                snprintf(fs, sizeof fs, "precision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n");
+            }
+            uint64_t t0 = SDL_GetPerformanceCounter();
+            GLuint p = link(vs, fs);
+            uint64_t us = (SDL_GetPerformanceCounter() - t0) * 1000000 / SDL_GetPerformanceFrequency();
+            if (us > worst) worst = us;
+            if (p) {
+                rt_log("[shader-async] SELFTEST OK: linked after %u frames, longest render-thread call %u us\n",
+                       g_pframe - start, (unsigned)worst);
+                glDeleteProgram(p);
+                test = 0;
+            } else if (g_pframe - start > 900) {
+                rt_log("[shader-async] SELFTEST FAILED: not ready after 900 frames\n");
+                test = 0;
+            }
+        }
+    }
+#endif
     int ww, wh, level;
     static unsigned frames, last_ms;
     frames++;

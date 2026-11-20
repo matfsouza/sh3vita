@@ -68,6 +68,7 @@ M(Present) {
     rt_keep_res();
     extern void ws_frame_end(void);
     ws_frame_end();   // widescreen.c: per-frame state (cutscene zoom)
+    { extern void tex_release_sweep(void); if (!(g_frame % 60)) tex_release_sweep(); }   // resource.c, tex_policy.h
 #ifndef __vita__
     {   // SH3_PC_SLOWMS=n: every frame takes n ms more, to reproduce the Vita's frame rate on the PC
         static int slow = -1, from = 0;   // SH3_PC_SLOWFROM=frame: only from that present on (reach gameplay first)
@@ -136,7 +137,7 @@ M(CreateIndexBuffer) {
 M(CreateRenderTarget) {
     HOSTFN;
     Surface *s = surf_create(ARG(2), ARG(3), ARG(4), 0);
-    s->usage = 1; // D3DUSAGE_RENDERTARGET : stockage GL
+    s->usage = 1; // D3DUSAGE_RENDERTARGET: stockage GL
     W32(ARG(7), surf_wrap(s));
     STDRET(7, HR_OK);
 }
@@ -282,7 +283,7 @@ M(EndStateBlock) {
     W32(ARG(2), h);
     STDRET(2, h ? HR_OK : D3DERR_INVALIDCALL);
 }
-// Only the runs of words that changed go to the prepare thread (ApplyStateBlock was 1.4% of the main thread
+// Only the runs of words that changed go to the prepare thread ( ApplyStateBlock 1.4% of the main thread
 // in the park; prep_set of a whole 1-1.5 KB array copied and queued all of it as soon as one state differed).
 static void prep_set_runs(void *field, const void *src, size_t n) {
     uint32_t *f = field;
@@ -395,6 +396,44 @@ M(DrawPrimitive) {
     { Buffer *vb0 = d->stream[0].vb; uint32_t st = d->stream[0].stride;
       if (g_drawdump) rt_log("[draw] vb mem %08x start %u stride %u\n", vb0 ? vb0->mem : 0, ARG(3), st);
       draw_dump(d, "VB", ARG(2), ARG(4), vb0 && vb0->mem ? vb0->mem + ARG(3) * st : 0, st, prim_verts(ARG(2), ARG(4)), R32(c->esp)); }
+#ifndef __vita__
+    {   // SH3_SKIP_CALLER=hex (PC diagnostics): drops the vertex-buffer draws issued from that return address
+        static uint32_t skip = 1;
+        if (skip == 1) skip = getenv("SH3_SKIP_CALLER") ? (uint32_t)strtoul(getenv("SH3_SKIP_CALLER"), NULL, 16) : 0;
+        if (skip && R32(c->esp) == skip) STDRET(4, HR_OK);
+        // SH3_SPRDIAG=frame: the 3D sprites of 0x5f5620 (save seal, signs) drawn that frame: vertex and VS constants
+        static int sprf = -1;
+        if (sprf < 0) sprf = getenv("SH3_SPRDIAG") ? atoi(getenv("SH3_SPRDIAG")) : 0;
+        extern unsigned g_frame;
+        Buffer *vb0 = d->stream[0].vb;
+        if (sprf && g_frame == (unsigned)sprf && R32(c->esp) == 0x5f572eu && vb0 && vb0->mem) {
+            uint8_t *const mb = g_mem;
+            uint32_t st = d->stream[0].stride, v = vb0->mem + ARG(3) * st;
+            rt_log("[spr] vs=%x stride=%u start=%u n=%u tex=%ux%u blend=%u %u/%u v:", d->vs, st, ARG(3), ARG(4),
+                   d->tex[0] ? d->tex[0]->w : 0, d->tex[0] ? d->tex[0]->h : 0, d->rs[27], d->rs[19], d->rs[20]);
+            for (uint32_t i = 0; i < st / 4 && i < 12; i++) rt_log(" %08x", R32(v + i * 4));
+            rt_log("\n      c0 %g %g %g %g | c4 %g %g %g %g | c52 %g %g %g %g | c53 %g %g %g %g | c54 %g %g %g %g\n",
+                   d->vsc[0][0], d->vsc[0][1], d->vsc[0][2], d->vsc[0][3], d->vsc[4][0], d->vsc[4][1], d->vsc[4][2], d->vsc[4][3],
+                   d->vsc[52][0], d->vsc[52][1], d->vsc[52][2], d->vsc[52][3], d->vsc[53][0], d->vsc[53][1], d->vsc[53][2],
+                   d->vsc[53][3], d->vsc[54][0], d->vsc[54][1], d->vsc[54][2], d->vsc[54][3]);
+            static int vs_logged;
+            if (d->vs == 0x2f && !vs_logged++) {
+                for (int i = 0; i < MAX_VSC; i++)
+                    if (d->vsc[i][0] || d->vsc[i][1] || d->vsc[i][2] || d->vsc[i][3])
+                        rt_log("      c%d = %g %g %g %g\n", i, d->vsc[i][0], d->vsc[i][1], d->vsc[i][2], d->vsc[i][3]);
+                PShader *psh = d->ps ? ps_get(d->ps) : NULL;
+                rt_log("      ps=%x fog=%u fogcolor=%08x tfactor=%08x\n", d->ps, d->rs[28], d->rs[34], d->rs[60]);
+                if (psh && psh->glsl_body) rt_log("--- PS ---\n%s--- end ---\n", psh->glsl_body);
+                for (int i = 0; i < 8; i++)
+                    if (d->psc[i][0] || d->psc[i][1] || d->psc[i][2] || d->psc[i][3])
+                        rt_log("      pc%d = %g %g %g %g\n", i, d->psc[i][0], d->psc[i][1], d->psc[i][2], d->psc[i][3]);
+                rt_log("      tss0 cop=%u a1=%u a2=%u aop=%u aa1=%u aa2=%u; atest=%u ref=%u func=%u; z=%u zw=%u\n",
+                       d->tss[0][1], d->tss[0][2], d->tss[0][3], d->tss[0][4], d->tss[0][5], d->tss[0][6],
+                       d->rs[15], d->rs[24], d->rs[25], d->rs[7], d->rs[14]);
+            }
+        }
+    }
+#endif
     {   // pre-transformed 2D from a vertex buffer (the map's marks): same box rules as the UP draws
         Buffer *vb0 = d->stream[0].vb; uint32_t st = d->stream[0].stride, n = prim_verts(ARG(2), ARG(4));
         uint32_t v = vb0 && vb0->mem ? vb0->mem + ARG(3) * st : 0, v0 = v;
@@ -402,6 +441,20 @@ M(DrawPrimitive) {
             if (!ui_box_draw(d, ARG(2), &v, st, n, 1)) STDRET(4, HR_OK);
             if (v != v0) { prep_draw(d, ARG(2), 0, n, ARG(4), NULL, 0, 0, mb + v, st); STDRET(4, HR_OK); }
         } else { extern int g_ws_ui_boxed; g_ws_ui_boxed = 0; }
+    }
+    {   // SH3_SEAL_LOG=1: every self-lit 3D sprite (0x5f5620 list, vertex shader 0x2f) with
+        // its texture and first vertex, to check which decals use that shader
+        static int sl = -1;
+        if (sl < 0) sl = getenv("SH3_SEAL_LOG") != NULL;
+        Buffer *vb0 = d->stream[0].vb;
+        if (sl && R32(c->esp) == 0x5f572eu && d->vs == 0x2f && vb0 && vb0->mem) {
+            uint8_t *const mb = g_mem; extern unsigned g_frame;
+            uint32_t v = vb0->mem + ARG(3) * d->stream[0].stride;
+            static unsigned last; if (g_frame != last) { last = g_frame; rt_log("[seal] frame %u\n", g_frame); }
+            rt_log("[seal] tex=%p %ux%u uv=%.3f,%.3f pos=%.0f,%.0f,%.0f ps=%x\n", (void *)d->tex[0], d->tex[0] ? d->tex[0]->w : 0,
+                   d->tex[0] ? d->tex[0]->h : 0, (double)rt_f32(R32(v + 24)), (double)rt_f32(R32(v + 28)),
+                   (double)rt_f32(R32(v)), (double)rt_f32(R32(v + 4)), (double)rt_f32(R32(v + 8)), d->ps);
+        }
     }
     prep_draw(d, ARG(2), ARG(3), prim_verts(ARG(2), ARG(4)), ARG(4), NULL, 0, 0, NULL, 0);
     STDRET(4, HR_OK);
@@ -430,6 +483,10 @@ static void draw_dump(Device *d, const char *kind, uint32_t prim, uint32_t n, ui
            g_frame, caller, kind, prim, n, d->vs, g_ws_ui_boxed, t0 ? t0->w : 0, t0 ? t0->h : 0, t0 ? t0->fmt : 0,
            d->rs[27], d->rs[19], d->rs[20], d->rs[15], d->rs[24], d->rs[7], d->rs[22], d->tss[0][1], d->tss[0][4],
            d->rt ? d->rt->w : 0, d->rt ? d->rt->h : 0);
+    rt_log(" zfunc=%u afunc=%u cwrite=%x", d->rs[23], d->rs[25], d->rs[168]);
+    if (d->rs[52])   // stencil: enable, func, ref, mask, write mask, fail / zfail / pass ops
+        rt_log(" st=func%u ref=%x mask=%x wmask=%x ops=%u/%u/%u", d->rs[56], d->rs[57], d->rs[58], d->rs[59],
+               d->rs[53], d->rs[54], d->rs[55]);
     if (v && stride >= 16 && nv && nv <= 256 && !(d->vs & 1) && d->vs < 0x10000) {
         float lo = 1e9f, hi = -1e9f, ylo = 1e9f, yhi = -1e9f;
         for (uint32_t i = 0; i < nv; i++) {
@@ -463,8 +520,8 @@ static int ui_box_draw(Device *d, uint32_t prim, uint32_t *verts, uint32_t strid
     int boxed = g_ws_ui_boxed;
     g_ws_ui_boxed = 0;
     uint32_t fvf = d->vs, v = *verts;
-    // map: Heather's arrow at 60% of the game's size, around its centre (ws_map_arrow_uv), closer to the PS2; a copy
-    // of the quad is drawn, the game's vertices are untouched
+    // map: Heather's arrow at 60% of the game's size, around its centre (ws_map_arrow_uv, user closer to
+    // the PS2); a copy of the quad is drawn, the game's vertices are untouched
     if (!(fvf & 1) && (fvf & 0xe) == 0x4 && ((fvf >> 8) & 0xf) >= 1 && n == 4 && stride >= 24 && stride <= 64 &&
         d->tex[0] && d->tex[0]->w == 128 && d->tex[0]->h == 128) {
         uint32_t uvo = 16 + ((fvf & 0x40) ? 4 : 0) + ((fvf & 0x80) ? 4 : 0);

@@ -9,6 +9,7 @@ REV=2bdbe895ddc6a7e410a9ea55a8f53d8173c61ad8
 SRC=${SH3_VITAGL_SRC:-$SH3_TOOLS/src/vitaGL}   # no spaces in the path
 PATCH="$here/../port/patches/vitagl-shared-depth.patch"
 PATCH2="$here/../port/patches/vitagl-depthless-fbo.patch"   # FBO scenes without depth surface
+PATCH3="$here/../port/patches/vitagl-sh3-async.patch"       # vglCompileGlslPairToBinary: shaders compiled off the GL thread
 MAKE=${MAKE:-mingw32-make}
 
 if [ ! -d "$SRC/.git" ]; then
@@ -21,6 +22,7 @@ git checkout --quiet --force "$REV"
 git clean -fdxq
 git apply "$PATCH"
 git apply "$PATCH2"
+git apply "$PATCH3"
 "$MAKE" -B NO_DEBUG=1 STORE_DEPTH_STENCIL=1 -j"$(nproc)"
 "$MAKE" NO_DEBUG=1 STORE_DEPTH_STENCIL=1 install
 echo "vitaGL $REV instalado em $VITASDK/arm-vita-eabi/lib"

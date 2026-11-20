@@ -7,10 +7,14 @@ static const char ROOT[] = "C:\\SH3\\";   // must match GUEST_ROOT (win32.h)
 static const char *const NAMES[] = {"INSTALLDIR", "data", "save", "movie", "sound"};
 
 int reg_key_exists(const char *path) {
-    static const char KEY[] = "SOFTWARE\\KONAMI\\SILENT HILL 3";
-    size_t n = strlen(path), k = sizeof KEY - 1;
+    // SH3's own key, and Silent Hill 2's: sh3.exe 0x5e96f0 turns the four SH2 references on when that key has an
+    // INSTALLDIR string (the PC port's stand-in for the PS2's "completed SH2 save on the memory card").
+    static const char *const KEYS[] = {"SOFTWARE\\KONAMI\\SILENT HILL 3", "SOFTWARE\\KONAMI\\SILENT HILL2"};
+    size_t n = strlen(path);
     if (n && (path[n - 1] == '\\' || path[n - 1] == '/')) n--;
-    return n == k && !strncasecmp(path, KEY, k);
+    for (size_t i = 0; i < sizeof KEYS / sizeof KEYS[0]; i++)
+        if (n == strlen(KEYS[i]) && !strncasecmp(path, KEYS[i], n)) return 1;
+    return 0;
 }
 
 uint32_t reg_default_value(const char *name, char *out, size_t cap) {

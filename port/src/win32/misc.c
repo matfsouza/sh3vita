@@ -42,7 +42,7 @@ static void reg_defaults(void) {
 
 typedef struct { char path[128]; } RegKey;
 #define A(name) void imp_ADVAPI32_##name(CPU *c)
-// Opens a key that exists (reg_key_exists): only SH3's own; ERROR_FILE_NOT_FOUND (2) otherwise, e.g. Silent Hill 2.
+// Opens a key that exists (reg_key_exists: SH3's own and Silent Hill 2's); ERROR_FILE_NOT_FOUND (2) otherwise.
 static uint32_t reg_open(CPU *c, uint32_t subkey, uint32_t result) {
     HOSTFN;
     reg_defaults();
@@ -58,11 +58,17 @@ static uint32_t reg_open(CPU *c, uint32_t subkey, uint32_t result) {
 }
 A(RegOpenKeyA) { HOSTFN; STDRET(3, reg_open(c, ARG(2), ARG(3))); }            // (hKey, lpSubKey, phkResult)
 A(RegOpenKeyExA) { HOSTFN; STDRET(5, reg_open(c, ARG(2), ARG(5))); }          // (hKey, lpSubKey, options, sam, phkResult)
-A(RegCloseKey) { HOSTFN; free(h_get(ARG(1), H_REGKEY)); h_close(ARG(1)); STDRET(1, 0); }
+// Keys follow the handle rule (handle_ref.h): the calls below hold the key while they read its path.
+A(RegCloseKey) { HOSTFN; int now; void *k = h_retire(ARG(1), H_REGKEY, &now); if (k && now) free(k); STDRET(1, 0); }
+static RegVal *reg_find_in(uint32_t h, const char *name) {   // the value `name` of the open key h, or NULL
+    RegKey *k = h_acquire(h, H_REGKEY);
+    RegVal *v = k ? reg_find(k->path, name ? name : "") : NULL;
+    if (k && h_release(h)) free(k);
+    return v;
+}
 A(RegQueryValueExA) {
     HOSTFN;
-    RegKey *k = h_get(ARG(1), H_REGKEY);
-    RegVal *v = k ? reg_find(k->path, GSTR(ARG(2)) ? GSTR(ARG(2)) : "") : NULL;
+    RegVal *v = reg_find_in(ARG(1), GSTR(ARG(2)));
     if (!v) STDRET(6, 2); // ERROR_FILE_NOT_FOUND
     if (ARG(4)) W32(ARG(4), v->type);
     uint32_t cap = ARG(6) ? R32(ARG(6)) : 0;
@@ -75,14 +81,15 @@ A(RegQueryValueExA) {
 }
 A(RegSetValueExA) {
     HOSTFN;
-    RegKey *k = h_get(ARG(1), H_REGKEY);
+    uint32_t h = ARG(1);
+    RegKey *k = h_acquire(h, H_REGKEY);
     if (k) reg_put(k->path, GSTR(ARG(2)) ? GSTR(ARG(2)) : "", ARG(4), mb + ARG(5), ARG(6));
+    if (k && h_release(h)) free(k);
     STDRET(6, 0);
 }
 A(RegDeleteValueA) {
     HOSTFN;
-    RegKey *k = h_get(ARG(1), H_REGKEY);
-    RegVal *v = k ? reg_find(k->path, GSTR(ARG(2)) ? GSTR(ARG(2)) : "") : NULL;
+    RegVal *v = reg_find_in(ARG(1), GSTR(ARG(2)));
     if (v) *v = reg[--reg_n];
     STDRET(2, v ? 0 : 2);
 }

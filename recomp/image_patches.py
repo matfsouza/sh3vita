@@ -138,6 +138,9 @@ ADDR_WRAPS = {
     0x59EF90: "ws_world_proj",        # effect system world -> GS projection (blood, footprints): full width (widescreen.c)
     0x5F09F0: "fix_no_safe_mode",     # never "A crash occurred..." / 640x480 safe mode (game_fixes.c)
     0x4DD2F0: "fix_puzzle_cursor",    # puzzle cursor up this frame: the pad drives the mouse pointer (game_fixes.c)
+    0x5E68F0: "fix_options_frame",    # options menu frame: L/R turn the page, Display Mode off (game_fixes.c)
+    0x5E3560: "fix_options_next_page",  # options page turn: Configuration (rendering settings) skipped
+    0x5E35E0: "fix_options_prev_page",
 }
 # 0x458010 "diag_model_walk" is no longer installed: the bug is fixed (guest memory) and
 # its full walk of every loaded model plus the file re-read cost part of the 160-300 ms hitches at cutscene cuts

@@ -8,7 +8,13 @@ enum { H_FREE, H_FILE, H_EVENT, H_MUTEX, H_THREAD, H_REGKEY, H_TIMER, H_SEM, H_M
 uint32_t h_new(int type, void *obj);
 void *h_get(uint32_t h, int type);
 int h_type(uint32_t h);
-void h_close(uint32_t h);
+void h_close(uint32_t h);   // for objects that are never freed (events, threads...): the number is free at once
+// Objects another thread may free while a call uses them (files, mmio, find, registry keys): every call takes
+// obj = h_acquire(h, type) and ends with h_release(h); the close takes obj = h_retire(h, type, &now). Whoever gets
+// 1 (h_release) or now = 1 (h_retire) destroys the object; the handle number is reused only after that (handle_ref.h).
+void *h_acquire(uint32_t h, int type);
+int h_release(uint32_t h);
+void *h_retire(uint32_t h, int type, int *now);
 
 // Waitable objects: all protected by a global lock and a common signal.
 extern SDL_mutex *g_sync;

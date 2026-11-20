@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <malloc.h>
 #include <errno.h>
+#include <zlib.h>
 
 int _newlib_heap_size_user = SH3_HOST_HEAP_MB * 1024 * 1024;
 unsigned int sceUserMainThreadStackSize = 4 * 1024 * 1024;
@@ -286,7 +287,96 @@ static void prep_text(const char *text, int x, int y) {
     glDrawArrays(GL_TRIANGLES, 0, count);
     free(vertices);
 }
+// Background of the preparation screen (tools/make_prep_screen.ps1, ui/prep.tga 960x544): logo, author, the
+// unofficial-port notice and an empty progress track that prep_progress fills (x 562..898, y 354..360 from the top).
+static GLuint prep_bg_tex, prep_bg_prog, prep_fill_prog;
+static int prep_bg_tried;
+static GLuint prep_link(const char *const src[2]) {   // vertex + fragment source -> program (0 if it fails)
+    GLuint p = glCreateProgram(), sh[2];
+    for (unsigned i = 0; i < 2; i++) {
+        sh[i] = glCreateShader(i ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER);
+        glShaderSource(sh[i], 1, &src[i], NULL);
+        glCompileShader(sh[i]);
+        glAttachShader(p, sh[i]);
+    }
+    glBindAttribLocation(p, 0, "aV0");
+    glLinkProgram(p);
+    for (unsigned i = 0; i < 2; i++) glDeleteShader(sh[i]);
+    GLint linked = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &linked);
+    if (!linked) { glDeleteProgram(p); return 0; }
+    return p;
+}
+static void prep_bg_free(void) {
+    if (prep_bg_prog) glDeleteProgram(prep_bg_prog);
+    if (prep_fill_prog) glDeleteProgram(prep_fill_prog);
+    if (prep_bg_tex) glDeleteTextures(1, &prep_bg_tex);
+    prep_bg_prog = prep_fill_prog = prep_bg_tex = 0;
+    prep_bg_tried = 0;
+}
+static int prep_bg_load(void) {
+    if (prep_bg_tried) return prep_bg_tex != 0;
+    prep_bg_tried = 1;
+    gzFile f = gzopen("app0:ui/prep.tga", "rb");   // gzip-compressed in the VPK (tools/gz_assets.py)
+    unsigned char h[18];
+    if (!f) return 0;
+    if (gzread(f, h, 18) != 18 || h[2] != 2 || h[16] != 32) { gzclose(f); return 0; }
+    unsigned w = h[12] | h[13] << 8, hh = h[14] | h[15] << 8;
+    unsigned char *px = (w == 960 && hh == 544) ? malloc((size_t)w * hh * 4) : NULL;
+    int ok = px && gzread(f, px, (unsigned)(w * hh * 4)) == (int)(w * hh * 4);
+    gzclose(f);
+    if (!ok) { free(px); return 0; }
+    for (size_t i = 0; i < (size_t)w * hh; i++) { unsigned char t = px[i * 4]; px[i * 4] = px[i * 4 + 2]; px[i * 4 + 2] = t; }   // BGRA -> RGBA
+    glGenTextures(1, &prep_bg_tex);
+    glBindTexture(GL_TEXTURE_2D, prep_bg_tex);
+    // drawn 1:1 on the 960x544 screen: nearest sampling gives each screen pixel exactly one picture pixel
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)w, (GLsizei)hh, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    free(px);
+    static const char *pic[] = {
+        "attribute vec2 aV0; varying vec2 uv; void main(){uv=vec2(aV0.x*0.5+0.5,0.5-aV0.y*0.5);gl_Position=vec4(aV0,0.0,1.0);}",
+        "precision mediump float; varying vec2 uv; uniform sampler2D t; void main(){gl_FragColor=texture2D(t,uv);}"
+    };
+    static const char *fill[] = {
+        "attribute vec2 aV0; void main(){gl_Position=vec4(aV0,0.0,1.0);}",
+        "precision mediump float; void main(){gl_FragColor=vec4(0.84,0.66,0.38,1.0);}"
+    };
+    prep_bg_prog = prep_link(pic);
+    prep_fill_prog = prep_link(fill);
+    int linked = prep_bg_prog && prep_fill_prog;
+    rt_log("[prewarm] preparation screen picture %s\n", linked ? "loaded" : "failed");
+    if (!linked) { prep_bg_free(); prep_bg_tried = 1; }
+    return prep_bg_tex != 0;
+}
 static void prep_progress(unsigned done, unsigned total) {
+    if (prep_bg_load()) {   // the picture, then the bar filled in the game's gold
+        static const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+        glViewport(0, 0, 960, 544);
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(prep_bg_prog);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, prep_bg_tex);
+        glUniform1i(glGetUniformLocation(prep_bg_prog, "t"), 0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, quad);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (total && done) {   // the gold fill inside the track, in screen pixels turned to clip space
+            float x0 = 562.f, x1 = 562.f + 336.f * (float)done / (float)total, y0 = 354.f, y1 = 360.f;
+            float l = x0 / 480.f - 1.f, r = x1 / 480.f - 1.f, t = 1.f - y0 / 272.f, b = 1.f - y1 / 272.f;
+            const float bar[] = {l, b, r, b, l, t, r, t};
+            glUseProgram(prep_fill_prog);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, bar);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+        glDisableVertexAttribArray(0);
+        glUseProgram(0);
+        vglSwapBuffers(GL_FALSE);
+        if (done == total) prep_bg_free();
+        return;
+    }
     if (!prep_program) {
         static const char *sources[] = {
             "attribute vec2 aV0; void main(){gl_Position=vec4(aV0,0.0,1.0);}",
@@ -321,8 +411,8 @@ static void prep_progress(unsigned done, unsigned total) {
     glUseProgram(prep_program);
     glEnableVertexAttribArray(0);
     glUniform4f(prep_color, 0.9f, 0.9f, 0.9f, 1.0f);
-    prep_text("Preparation du jeu", 336, 170);
-    prep_text("Cette operation peut prendre quelques minutes.", 104, 350);
+    prep_text("Preparing graphics", 336, 170);
+    prep_text("This happens only once and takes a few minutes.", 104, 350);
     char label[12];
     snprintf(label, sizeof label, "%u %%", total ? done * 100 / total : 0);
     prep_text(label, 448, 250);
@@ -484,6 +574,11 @@ int main(void) {
         if (ui && !strcmp(ui, "0")) progress = NULL;
         else if (ui && !strcmp(ui, "font")) progress = prep_progress;
         gfx_prewarm_shader_bank(DATA_DIR "/shaders.bin", progress);
+    }
+    {   // GPU programs of the whole game (list written on the PC, tools/shader_cache_bundle.py): the ones missing from
+        // the VPK's bundle and from the cache are compiled now, once, instead of in the middle of a scene.
+        int gfx_compile_shader_list(const char *, void (*)(unsigned, unsigned));
+        gfx_compile_shader_list("app0:/shadercache/r1/shaders.lst", prep_progress);
     }
     rt_run_entry();
     rt_log_flush();
