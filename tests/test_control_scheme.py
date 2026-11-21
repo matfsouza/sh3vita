@@ -81,6 +81,11 @@ int main(void) {
     ok("parse", sh3_scheme_parse("2\n") == 2 && sh3_scheme_parse("0") == 0);
     ok("parse junk", sh3_scheme_parse("x") == SH3_SCHEME_VITA && sh3_scheme_parse("7") == SH3_SCHEME_VITA && sh3_scheme_parse("") == SH3_SCHEME_VITA);
     ok("next wraps", sh3_scheme_step(2, 1) == 0 && sh3_scheme_step(0, -1) == 2 && sh3_scheme_step(1, 1) == 2);
+    /* right stick -> camera: the game reads lZ as the camera's horizontal axis and lRz as its vertical one */
+    { Sh3CameraAxes a = sh3_camera_axes(25000, 0);
+      ok("stick right turns the camera (lZ), not up/down", a.z == 25000 && a.rz == 0); }
+    { Sh3CameraAxes a = sh3_camera_axes(0, -25000);
+      ok("stick up tilts the camera (lRz), not left/right", a.z == 0 && a.rz == -25000); }
     puts(fails ? "control_scheme: FAILED" : "control_scheme: ok");
     return fails != 0;
 }

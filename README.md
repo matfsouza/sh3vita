@@ -60,7 +60,10 @@ safe saves.
   the camera.
 - **Silent Hill 2 easter eggs:** the four references of the original game play again. Try the blocked toilet in the
   women's washroom of the mall.
-- **Crash fixed** when opening Options from the inventory.
+- **More stable:** fixed a crash that could happen while the game loads, for example when opening Options from the
+  inventory.
+- **Status screen:** Heather shows again in the box in the top-left corner of the inventory.
+- **Right stick:** the camera turns and tilts in the directions you push.
 - New loading and preparation screens and LiveArea artwork.
 
 ## What you need

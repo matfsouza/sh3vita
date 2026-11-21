@@ -74,6 +74,9 @@ target_link_libraries(sh3
   stdc++ m z)
 
 target_link_options(sh3 PRIVATE -Wl,--allow-multiple-definition)
+# newlib on the Vita has no stdio locking: every call that takes or returns a FILE from its pool goes through one lock,
+# the static libraries' calls included (src/vita/stdio_lock.c, tests/test_stdio_lock.py).
+target_link_options(sh3 PRIVATE -Wl,--wrap=fopen -Wl,--wrap=fclose -Wl,--wrap=freopen -Wl,--wrap=fdopen)
 set(SH3_SCE_PADDING "${CMAKE_CURRENT_SOURCE_DIR}/src/vita/sce-padding.ld")
 target_link_options(sh3 PRIVATE "LINKER:-T,${SH3_SCE_PADDING}")
 set_property(TARGET sh3 APPEND PROPERTY LINK_DEPENDS "${SH3_SCE_PADDING}")

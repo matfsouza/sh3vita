@@ -359,11 +359,12 @@ M(dev, GetDeviceState) {
         else if (cur) { W32(p + 0, axis(self, 0, SHAPE(lsx, 1.0f))); W32(p + 4, axis(self, 1, SHAPE(lsy, 1.0f))); }
         else if (tps || ui) { W32(p + 0, axis(self, 0, SHAPE(lsx, 1.0f))); W32(p + 4, axis(self, 1, SHAPE(lsy, 1.0f))); }
         else { W32(p + 0, axis(self, 0, SHAPE(rsx, 1.0f))); W32(p + 4, axis(self, 1, SHAPE(lsy, 1.0f))); }
-        W32(p + 8, axis(self, 2, (tps && !stickmode) ? SHAPE(rsy, 0.9f * camera) : 0));    // lZ: camera up/down (third person)
+        Sh3CameraAxes cam = sh3_camera_axes(rsx, rsy);   // control_scheme.h: lZ horizontal, lRz vertical
+        W32(p + 8, axis(self, 2, (tps && !stickmode) ? SHAPE(cam.z, 0.9f * camera) : 0));   // lZ: camera left/right (third person)
         int window = 0;   // SH3: removido (SH4 apartment exterior-window camera)
         W32(p + 12, axis(self, 3, window ? SHAPE(rsx, camera) : 0)); // lRx: exterior-window horizontal look
         W32(p + 16, axis(self, 4, (!tps && !stickmode) ? SHAPE(rsy, 0.55f) : 0)); // lRy: look up/down (first person)
-        W32(p + 20, axis(self, 5, (tps && !stickmode) ? SHAPE(rsx, 0.9f * camera) : 0));   // lRz: camera left/right (third person)
+        W32(p + 20, axis(self, 5, (tps && !stickmode) ? SHAPE(cam.rz, 0.9f * camera) : 0));   // lRz: camera up/down (third person)
         static int audit_pad = -1;
         if (audit_pad < 0) { const char *v = getenv("SH3_AUDIT_PAD"); audit_pad = v ? (atoi(v) == 2 ? 2 : 1) : 0; }
         if (audit_pad && (audit_pad == 2 || g_frame % 30 == 0)) {

@@ -1927,8 +1927,27 @@ typedef struct { Surface *src, *dst; } RbArg;
 static void rb_cb(void *a) {
     RbArg *r = a;
     uint8_t *tmp = malloc((size_t)r->src->w * r->src->h * 4);
+#ifdef __vita__
+    // vitaGL's glReadPixels waits for the GPU only when the target read is the one being drawn to. The game draws a
+    // target, goes back to the screen, then locks it: the queued GL calls run first (q_sync, the render thread),
+    // then glFinish waits for the GPU, so the read gets what was drawn. glFinish is not queued: q_sync first.
+    q_sync("readback");
+    glFinish();
+#endif
     bind_read(r->src);
     glReadPixels(0, 0, (GLsizei)r->src->w, (GLsizei)r->src->h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+    {   // diagnosis of the inventory status picture (a 64x64 target read back): mean colour of the first reads
+        static unsigned logged;
+        uint32_t n = r->src->w * r->src->h;
+        if (n > 1 && n <= 128 * 128 && logged < 12) {
+            uint64_t sum[4] = {0, 0, 0, 0};
+            for (uint32_t i = 0; i < n; i++) for (int c = 0; c < 4; c++) sum[c] += tmp[i * 4 + c];
+            logged++;
+            rt_log("[readback] %ux%u mean rgba %u %u %u %u\n", r->src->w, r->src->h, (unsigned)(sum[0] / n),
+                   (unsigned)(sum[1] / n), (unsigned)(sum[2] / n), (unsigned)(sum[3] / n));
+            rt_log_flush();
+        }
+    }
     from_rgba(r->dst->fmt, tmp, g_mem + r->dst->mem, r->src->w * r->src->h);
     free(tmp);
     gfx_bind_target(g_pdev);
@@ -1990,7 +2009,8 @@ void surf_readback(Surface *s) {
     static unsigned tiny_n;
     uint64_t tiny_t0 = s->w * s->h <= 16 && tiny_n < 12 ? SDL_GetPerformanceCounter() : 0;
     if (!s->mem) {
-        rt_log("[readback] %ux%u fmt %u bb=%d\n", s->w, s->h, s->fmt, s->is_backbuffer);
+        extern unsigned g_frame;
+        rt_log("[readback] %ux%u fmt %u bb=%d frame %u\n", s->w, s->h, s->fmt, s->is_backbuffer, g_frame);
         s->mem = gheap_calloc(fmt_level_size(s->fmt, s->w, s->h));
         if (!s->mem) return;
     }

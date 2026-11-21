@@ -59,6 +59,15 @@ static inline unsigned sh3_scheme_menu_cancel(unsigned raw, int scheme, int in_w
     return 1u << SH3_DIB_RUN;
 }
 
+// Right stick -> third-person camera. The game's default pad table binds the camera's horizontal axis to DirectInput
+// lZ and its vertical axis to lRz, the layout of a PC pad's right stick (X on Z, Y on Rz); feeding the stick's Y into
+// lZ turned "up" into "left". Stick right / down are positive, as on the left stick.
+typedef struct { int z, rz; } Sh3CameraAxes;
+static inline Sh3CameraAxes sh3_camera_axes(int rsx, int rsy) {
+    Sh3CameraAxes a = { rsx, rsy };
+    return a;
+}
+
 // Which half of a touch pad a finger is on: 0 left, 1 right.
 static inline int sh3_touch_side(int x, int width) { return x >= width / 2; }
 

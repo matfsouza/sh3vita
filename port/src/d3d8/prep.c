@@ -32,7 +32,14 @@ static volatile uint32_t tail __attribute__((aligned(64)));   // published by th
 static volatile int c_sleep __attribute__((aligned(64)));
 static SDL_sem *sem;
 static Device *pd;
-static __thread int on_prep;
+// The thread running the records: the prepare thread (mode 2) or the thread inside pump (modes 0 / 1). Compared by
+// thread id: on the Vita `__thread` is emulated TLS that gave every thread the same value, so the game thread took
+// itself for the consumer and prep_call ran its function at once, ahead of the queued GL work.
+static volatile SDL_threadID s_prep_tid, s_pump_tid;
+static int on_prep(void) {
+    SDL_threadID me = SDL_ThreadID();
+    return (s_prep_tid && me == s_prep_tid) || (s_pump_tid && me == s_pump_tid);
+}
 static uint32_t prev_present_pos;
 static uint64_t st_rec, st_inl, st_lockw, st_lockw_t, st_fullw, st_fullw_t, st_ibytes, st_busy, st_idle;
 
@@ -101,17 +108,17 @@ static int consume_all(void) {
     }
     return any;
 }
-static void pump(void) {
-    int was = on_prep;
-    on_prep = 1;
+static void pump(void) {   // modes 0 / 1: the producer runs the records itself (nested pumps restore the outer one)
+    SDL_threadID was = s_pump_tid;
+    s_pump_tid = SDL_ThreadID();
     consume_all();
-    on_prep = was;
+    s_pump_tid = was;
 }
 static inline uint64_t now(void) { return SDL_GetPerformanceCounter(); }
 static int prep_thread(void *arg) {
     (void)arg;
     rt_cpu_profile_thread("prepare");
-    on_prep = 1;
+    s_prep_tid = SDL_ThreadID();
 #ifdef __vita__
     sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_2);
 #endif
@@ -419,14 +426,14 @@ void prep_free(int kind, void *p) {
     prep_gdrain();
 }
 void prep_call(void (*fn)(void *), void *arg) {
-    if (on_prep) { fn(arg); return; }
+    if (on_prep()) { fn(arg); return; }
     uint32_t *r = rec_begin(R_CALL, 5);
     putp(r + 1, (void *)(uintptr_t)fn); putp(r + 3, arg);
     rec_commit(5);
     wait_pos(cur_pos());
 }
 void prep_post(void (*fn)(void *), void *arg) {
-    if (on_prep) { fn(arg); return; }
+    if (on_prep()) { fn(arg); return; }
     uint32_t *r = rec_begin(R_CALL, 5);
     putp(r + 1, (void *)(uintptr_t)fn); putp(r + 3, arg);
     rec_commit(5);
