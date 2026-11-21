@@ -253,5 +253,9 @@ The generated code (`port/gen/`) and everything else derived from the game stays
 The code of this project is **GPLv3** (see [LICENSE](LICENSE)). Third-party components keep their own licenses:
 see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [LICENSES/](LICENSES/).
 
+**Attribution required.** The parts written by matfsouza carry one additional term allowed by GPLv3 section 7(b):
+if you share this work or a work based on it, keep the credit "Silent Hill 3 Enhanced Edition for PS Vita by
+matfsouza: https://github.com/matfsouza/sh3vita" in its README and in its credits. See [NOTICE.md](NOTICE.md).
+
 **SILENT HILL 3 © Konami.** This is an unofficial, non-commercial fan project. It is not affiliated with or endorsed
 by Konami or Sony, and it contains no game data: you must own the PC game to use it.
